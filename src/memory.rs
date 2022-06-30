@@ -1,1 +1,36 @@
 //! Physical memory and address-space management.
+
+/// Checked memory-operation failures.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MemoryError {
+    /// Alignment must be a nonzero power of two.
+    InvalidAlignment,
+    /// An address or byte count would wrap.
+    Overflow,
+}
+
+/// Round down to a checked power-of-two alignment.
+pub fn align_down(value: usize, alignment: usize) -> Result<usize, MemoryError> {
+    if !alignment.is_power_of_two() {
+        return Err(MemoryError::InvalidAlignment);
+    }
+    Ok(value & !(alignment - 1))
+}
+
+/// Round up without wrapping the address space.
+pub fn align_up(value: usize, alignment: usize) -> Result<usize, MemoryError> {
+    let down = align_down(value, alignment)?;
+    if down == value {
+        Ok(value)
+    } else {
+        down.checked_add(alignment).ok_or(MemoryError::Overflow)
+    }
+}
+
+/// Check alignment, rejecting invalid alignment values.
+pub fn is_aligned(value: usize, alignment: usize) -> Result<bool, MemoryError> {
+    Ok(align_down(value, alignment)? == value)
+}
+
+#[cfg(test)]
+mod tests;
