@@ -32,5 +32,8 @@ pub fn is_aligned(value: usize, alignment: usize) -> Result<bool, MemoryError> {
     Ok(align_down(value, alignment)? == value)
 }
 
+mod address;
+pub use address::{PhysAddr, VirtAddr, PAGE_SIZE};
+
 #[cfg(test)]
 mod tests;
