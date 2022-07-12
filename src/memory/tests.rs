@@ -35,4 +35,42 @@ fn address_types_check_arithmetic_and_offsets() {
     assert_eq!(v.align_down(4096).unwrap(), v);
 }
 
+#[test]
+fn page_ranges_are_checked_half_open_intervals() {
+    let range = PageRange::new(VirtAddr::new(0x1000), 3).unwrap();
+    assert_eq!(range.start(), VirtAddr::new(0x1000));
+    assert_eq!(range.end(), VirtAddr::new(0x4000));
+    assert_eq!(range.page_count(), 3);
+    assert_eq!(range.byte_len(), 3 * PAGE_SIZE);
+    assert!(range.contains(VirtAddr::new(0x3fff)));
+    assert!(!range.contains(range.end()));
+    assert_eq!(
+        range
+            .pages()
+            .map(VirtAddr::get)
+            .collect::<std::vec::Vec<_>>(),
+        [0x1000, 0x2000, 0x3000]
+    );
+    let cover = PageRange::covering(VirtAddr::new(0x1fff), 2).unwrap();
+    assert_eq!(cover.page_count(), 2);
+    assert!(range.overlaps(cover));
+    assert!(!range.overlaps(PageRange::new(range.end(), 1).unwrap()));
+    let empty = PageRange::covering(VirtAddr::new(3), 0).unwrap();
+    assert!(empty.is_empty());
+    assert_eq!(empty.pages().len(), 0);
+    assert!(!empty.overlaps(range));
+    assert_eq!(
+        PageRange::new(VirtAddr::new(1), 1),
+        Err(MemoryError::Misaligned)
+    );
+    assert_eq!(
+        PageRange::new(VirtAddr::new(0), usize::MAX),
+        Err(MemoryError::Overflow)
+    );
+    assert_eq!(
+        PageRange::covering(VirtAddr::new(usize::MAX), 1),
+        Err(MemoryError::Overflow)
+    );
+}
+
 // NEXT TEST

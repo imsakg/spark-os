@@ -7,6 +7,8 @@ pub enum MemoryError {
     InvalidAlignment,
     /// An address or byte count would wrap.
     Overflow,
+    /// A page or frame address is not 4 KiB aligned.
+    Misaligned,
 }
 
 /// Round down to a checked power-of-two alignment.
@@ -34,6 +36,9 @@ pub fn is_aligned(value: usize, alignment: usize) -> Result<bool, MemoryError> {
 
 mod address;
 pub use address::{PhysAddr, VirtAddr, PAGE_SIZE};
+
+mod range;
+pub use range::PageRange;
 
 #[cfg(test)]
 mod tests;
