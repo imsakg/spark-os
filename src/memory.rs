@@ -9,6 +9,14 @@ pub enum MemoryError {
     Overflow,
     /// A page or frame address is not 4 KiB aligned.
     Misaligned,
+    /// A nonempty operation was given zero elements.
+    InvalidSize,
+    /// Caller-provided fixed storage is too small.
+    Capacity,
+    /// No suitable free memory remains.
+    OutOfMemory,
+    /// An address or interval is outside the managed memory.
+    OutOfRange,
 }
 
 /// Round down to a checked power-of-two alignment.
@@ -39,6 +47,9 @@ pub use address::{PhysAddr, VirtAddr, PAGE_SIZE};
 
 mod range;
 pub use range::PageRange;
+
+mod frame;
+pub use frame::BitmapFrames;
 
 #[cfg(test)]
 mod tests;

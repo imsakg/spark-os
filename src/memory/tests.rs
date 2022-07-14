@@ -73,4 +73,43 @@ fn page_ranges_are_checked_half_open_intervals() {
     );
 }
 
+#[test]
+fn bitmap_frames_exhaust_without_allocating_tail_bits() {
+    let mut used = [u64::MAX; 2];
+    let mut reserved = [u64::MAX; 2];
+    let mut frames =
+        BitmapFrames::new(PhysAddr::new(0x1000), 65, &mut used, &mut reserved).unwrap();
+    assert_eq!(frames.base(), PhysAddr::new(0x1000));
+    assert_eq!(frames.frame_count(), 65);
+    for i in 0..65 {
+        assert_eq!(frames.allocate(), Ok(PhysAddr::new(0x1000 + i * PAGE_SIZE)));
+    }
+    assert_eq!(frames.allocate(), Err(MemoryError::OutOfMemory));
+    assert_eq!(frames.is_allocated(PhysAddr::new(0x1000)), Ok(true));
+}
+
+#[test]
+fn bitmap_constructor_rejects_invalid_backing_without_mutation() {
+    let mut a = [123];
+    let mut b = [456];
+    assert_eq!(
+        BitmapFrames::new(PhysAddr::new(1), 1, &mut a, &mut b).err(),
+        Some(MemoryError::Misaligned)
+    );
+    assert_eq!(
+        BitmapFrames::new(PhysAddr::new(0), 65, &mut a, &mut b).err(),
+        Some(MemoryError::Capacity)
+    );
+    assert_eq!(
+        BitmapFrames::new(PhysAddr::new(0), 0, &mut a, &mut b).err(),
+        Some(MemoryError::InvalidSize)
+    );
+    assert_eq!(
+        BitmapFrames::new(PhysAddr::new(0), usize::MAX, &mut a, &mut b).err(),
+        Some(MemoryError::Overflow)
+    );
+    assert_eq!(a, [123]);
+    assert_eq!(b, [456]);
+}
+
 // NEXT TEST
