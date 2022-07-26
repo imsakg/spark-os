@@ -17,6 +17,8 @@ pub enum MemoryError {
     OutOfMemory,
     /// An address or interval is outside the managed memory.
     OutOfRange,
+    /// A released frame was already free.
+    DoubleFree,
 }
 
 /// Round down to a checked power-of-two alignment.

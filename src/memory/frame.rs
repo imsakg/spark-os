@@ -72,6 +72,17 @@ impl<'a> BitmapFrames<'a> {
     pub fn is_allocated(&self, address: PhysAddr) -> Result<bool, MemoryError> {
         Ok(self.occupied(self.index(address)?))
     }
+    /// Release an allocated frame, rejecting invalid and duplicate frees.
+    pub fn free(&mut self, address: PhysAddr) -> Result<(), MemoryError> {
+        let index = self.index(address)?;
+        let mask = 1u64 << (index % 64);
+        if self.used[index / 64] & mask == 0 {
+            return Err(MemoryError::DoubleFree);
+        }
+        self.used[index / 64] &= !mask;
+        Ok(())
+    }
+
     /// Allocate the lowest free frame, or fail without changing the pool.
     pub fn allocate(&mut self) -> Result<PhysAddr, MemoryError> {
         for index in 0..self.count {

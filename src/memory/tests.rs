@@ -112,4 +112,33 @@ fn bitmap_constructor_rejects_invalid_backing_without_mutation() {
     assert_eq!(b, [456]);
 }
 
+#[test]
+fn freeing_frames_reuses_lowest_hole_and_rejects_invalid_frees() {
+    let mut a = [0; 2];
+    let mut b = [0; 2];
+    let mut frames = BitmapFrames::new(PhysAddr::new(PAGE_SIZE), 66, &mut a, &mut b).unwrap();
+    let first = frames.allocate().unwrap();
+    let second = frames.allocate().unwrap();
+    assert_eq!(frames.free(first), Ok(()));
+    assert_eq!(frames.free(first), Err(MemoryError::DoubleFree));
+    assert_eq!(frames.free(PhysAddr::new(0)), Err(MemoryError::OutOfRange));
+    assert_eq!(
+        frames.free(PhysAddr::new(67 * PAGE_SIZE)),
+        Err(MemoryError::OutOfRange)
+    );
+    assert_eq!(
+        frames.free(PhysAddr::new(PAGE_SIZE + 1)),
+        Err(MemoryError::Misaligned)
+    );
+    assert_eq!(frames.is_allocated(second), Ok(true));
+    assert_eq!(frames.allocate(), Ok(first));
+    for _ in 2..66 {
+        frames.allocate().unwrap();
+    }
+    let tail = PhysAddr::new(66 * PAGE_SIZE);
+    frames.free(tail).unwrap();
+    assert_eq!(frames.allocate(), Ok(tail));
+    assert_eq!(frames.allocate(), Err(MemoryError::OutOfMemory));
+}
+
 // NEXT TEST
