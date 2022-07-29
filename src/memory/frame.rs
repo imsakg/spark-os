@@ -72,10 +72,41 @@ impl<'a> BitmapFrames<'a> {
     pub fn is_allocated(&self, address: PhysAddr) -> Result<bool, MemoryError> {
         Ok(self.occupied(self.index(address)?))
     }
+    fn indices(
+        &self,
+        address: PhysAddr,
+        count: usize,
+    ) -> Result<core::ops::Range<usize>, MemoryError> {
+        if count == 0 {
+            return Err(MemoryError::InvalidSize);
+        }
+        let start = self.index(address)?;
+        let end = start.checked_add(count).ok_or(MemoryError::Overflow)?;
+        if end > self.count {
+            return Err(MemoryError::OutOfRange);
+        }
+        Ok(start..end)
+    }
+
+    /// Permanently exclude an entirely free extent, committing only on success.
+    pub fn reserve(&mut self, address: PhysAddr, count: usize) -> Result<(), MemoryError> {
+        let indices = self.indices(address, count)?;
+        if indices.clone().any(|index| self.occupied(index)) {
+            return Err(MemoryError::AlreadyUsed);
+        }
+        for index in indices {
+            self.reserved[index / 64] |= 1u64 << (index % 64);
+        }
+        Ok(())
+    }
+
     /// Release an allocated frame, rejecting invalid and duplicate frees.
     pub fn free(&mut self, address: PhysAddr) -> Result<(), MemoryError> {
         let index = self.index(address)?;
         let mask = 1u64 << (index % 64);
+        if self.reserved[index / 64] & mask != 0 {
+            return Err(MemoryError::Reserved);
+        }
         if self.used[index / 64] & mask == 0 {
             return Err(MemoryError::DoubleFree);
         }

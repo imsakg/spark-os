@@ -19,6 +19,10 @@ pub enum MemoryError {
     OutOfRange,
     /// A released frame was already free.
     DoubleFree,
+    /// A permanent reservation cannot be released as an allocation.
+    Reserved,
+    /// An allocation or reservation already occupies the requested interval.
+    AlreadyUsed,
 }
 
 /// Round down to a checked power-of-two alignment.

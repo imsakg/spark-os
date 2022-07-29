@@ -141,4 +141,42 @@ fn freeing_frames_reuses_lowest_hole_and_rejects_invalid_frees() {
     assert_eq!(frames.allocate(), Err(MemoryError::OutOfMemory));
 }
 
+#[test]
+fn frame_reservations_are_atomic_and_cannot_be_freed() {
+    let mut a = [0; 2];
+    let mut b = [0; 2];
+    let mut frames = BitmapFrames::new(PhysAddr::new(0), 70, &mut a, &mut b).unwrap();
+    frames.reserve(PhysAddr::new(63 * PAGE_SIZE), 3).unwrap();
+    assert_eq!(
+        frames.free(PhysAddr::new(64 * PAGE_SIZE)),
+        Err(MemoryError::Reserved)
+    );
+    assert_eq!(
+        frames.reserve(PhysAddr::new(62 * PAGE_SIZE), 2),
+        Err(MemoryError::AlreadyUsed)
+    );
+    assert_eq!(
+        frames.is_allocated(PhysAddr::new(62 * PAGE_SIZE)),
+        Ok(false)
+    );
+    assert_eq!(
+        frames.reserve(PhysAddr::new(69 * PAGE_SIZE), 2),
+        Err(MemoryError::OutOfRange)
+    );
+    assert_eq!(
+        frames.is_allocated(PhysAddr::new(69 * PAGE_SIZE)),
+        Ok(false)
+    );
+    assert_eq!(
+        frames.reserve(PhysAddr::new(0), 0),
+        Err(MemoryError::InvalidSize)
+    );
+    let first = frames.allocate().unwrap();
+    assert_eq!(frames.reserve(first, 1), Err(MemoryError::AlreadyUsed));
+    for i in 1..63 {
+        assert_eq!(frames.allocate(), Ok(PhysAddr::new(i * PAGE_SIZE)));
+    }
+    assert_eq!(frames.allocate(), Ok(PhysAddr::new(66 * PAGE_SIZE)));
+}
+
 // NEXT TEST
