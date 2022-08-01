@@ -11,7 +11,48 @@ pub struct BitmapFrames<'a> {
     reserved: &'a mut [u64],
 }
 
+/// Snapshot of frame counts; every field is measured in 4 KiB frames.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FrameStats {
+    /// Managed frames including reservations.
+    pub total: usize,
+    /// Frames allocated to clients.
+    pub allocated: usize,
+    /// Permanently excluded frames.
+    pub reserved: usize,
+    /// Frames available for allocation.
+    pub free: usize,
+    /// Largest physically contiguous free interval.
+    pub largest_free_run: usize,
+}
+
 impl<'a> BitmapFrames<'a> {
+    /// Recompute accounting and fragmentation without trusting bitmap tail bits.
+    pub fn stats(&self) -> FrameStats {
+        let mut stats = FrameStats {
+            total: self.count,
+            allocated: 0,
+            reserved: 0,
+            free: 0,
+            largest_free_run: 0,
+        };
+        let mut run = 0;
+        for index in 0..self.count {
+            let mask = 1u64 << (index % 64);
+            if self.reserved[index / 64] & mask != 0 {
+                stats.reserved += 1;
+                run = 0;
+            } else if self.used[index / 64] & mask != 0 {
+                stats.allocated += 1;
+                run = 0;
+            } else {
+                stats.free += 1;
+                run += 1;
+                stats.largest_free_run = core::cmp::max(stats.largest_free_run, run);
+            }
+        }
+        stats
+    }
     /// Create a nonempty frame pool; each bitmap needs ceil(count / 64) words.
     pub fn new(
         base: PhysAddr,

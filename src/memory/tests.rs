@@ -179,4 +179,52 @@ fn frame_reservations_are_atomic_and_cannot_be_freed() {
     assert_eq!(frames.allocate(), Ok(PhysAddr::new(66 * PAGE_SIZE)));
 }
 
+#[test]
+fn frame_accounting_distinguishes_reservations_and_fragmentation() {
+    let mut a = [0];
+    let mut b = [0];
+    let mut frames = BitmapFrames::new(PhysAddr::new(0), 8, &mut a, &mut b).unwrap();
+    assert_eq!(
+        frames.stats(),
+        FrameStats {
+            total: 8,
+            allocated: 0,
+            reserved: 0,
+            free: 8,
+            largest_free_run: 8
+        }
+    );
+    frames.reserve(PhysAddr::new(2 * PAGE_SIZE), 2).unwrap();
+    frames.allocate().unwrap();
+    let second = frames.allocate().unwrap();
+    assert_eq!(
+        frames.stats(),
+        FrameStats {
+            total: 8,
+            allocated: 2,
+            reserved: 2,
+            free: 4,
+            largest_free_run: 4
+        }
+    );
+    frames.free(second).unwrap();
+    frames.reserve(PhysAddr::new(5 * PAGE_SIZE), 1).unwrap();
+    assert_eq!(
+        frames.stats(),
+        FrameStats {
+            total: 8,
+            allocated: 1,
+            reserved: 3,
+            free: 4,
+            largest_free_run: 2
+        }
+    );
+    let before = frames.stats();
+    assert_eq!(
+        frames.reserve(PhysAddr::new(0), 8),
+        Err(MemoryError::AlreadyUsed)
+    );
+    assert_eq!(frames.stats(), before);
+}
+
 // NEXT TEST
