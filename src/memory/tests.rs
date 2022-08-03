@@ -227,4 +227,31 @@ fn frame_accounting_distinguishes_reservations_and_fragmentation() {
     assert_eq!(frames.stats(), before);
 }
 
+#[test]
+fn contiguous_frames_cross_bitmap_words_and_fail_without_partial_claims() {
+    let mut a = [0; 2];
+    let mut b = [0; 2];
+    let mut frames = BitmapFrames::new(PhysAddr::new(PAGE_SIZE), 70, &mut a, &mut b).unwrap();
+    frames.reserve(PhysAddr::new(PAGE_SIZE), 62).unwrap();
+    let extent = frames.allocate_contiguous(5).unwrap();
+    assert_eq!(extent.start(), PhysAddr::new(63 * PAGE_SIZE));
+    assert_eq!(extent.end(), PhysAddr::new(68 * PAGE_SIZE));
+    assert_eq!(extent.frame_count(), 5);
+    assert_eq!(extent.byte_len(), 5 * PAGE_SIZE);
+    let before = frames.stats();
+    assert_eq!(frames.allocate_contiguous(4), Err(MemoryError::OutOfMemory));
+    assert_eq!(frames.allocate_contiguous(0), Err(MemoryError::InvalidSize));
+    assert_eq!(
+        frames.allocate_contiguous(usize::MAX),
+        Err(MemoryError::Overflow)
+    );
+    assert_eq!(frames.stats(), before);
+    assert_eq!(frames.allocate_contiguous(3).unwrap().start(), extent.end());
+    assert_eq!(frames.stats().free, 0);
+    assert_eq!(
+        FrameExtent::new(PhysAddr::new(1), 1),
+        Err(MemoryError::Misaligned)
+    );
+}
+
 // NEXT TEST

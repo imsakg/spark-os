@@ -55,7 +55,7 @@ mod range;
 pub use range::PageRange;
 
 mod frame;
-pub use frame::{BitmapFrames, FrameStats};
+pub use frame::{BitmapFrames, FrameExtent, FrameStats};
 
 #[cfg(test)]
 mod tests;

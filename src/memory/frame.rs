@@ -26,6 +26,44 @@ pub struct FrameStats {
     pub largest_free_run: usize,
 }
 
+/// A nonempty checked extent of physically contiguous 4 KiB frames.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FrameExtent {
+    start: PhysAddr,
+    count: usize,
+}
+
+impl FrameExtent {
+    /// Describe an extent without allocating it or claiming ownership.
+    pub fn new(start: PhysAddr, count: usize) -> Result<Self, MemoryError> {
+        if start.page_offset() != 0 {
+            return Err(MemoryError::Misaligned);
+        }
+        if count == 0 {
+            return Err(MemoryError::InvalidSize);
+        }
+        let bytes = count.checked_mul(PAGE_SIZE).ok_or(MemoryError::Overflow)?;
+        start.checked_add(bytes)?;
+        Ok(Self { start, count })
+    }
+    /// First physical frame address.
+    pub const fn start(self) -> PhysAddr {
+        self.start
+    }
+    /// Exclusive physical end, validated at construction.
+    pub fn end(self) -> PhysAddr {
+        PhysAddr::new(self.start.get() + self.byte_len())
+    }
+    /// Extent length in frames.
+    pub const fn frame_count(self) -> usize {
+        self.count
+    }
+    /// Extent length in bytes.
+    pub const fn byte_len(self) -> usize {
+        self.count * PAGE_SIZE
+    }
+}
+
 impl<'a> BitmapFrames<'a> {
     /// Recompute accounting and fragmentation without trusting bitmap tail bits.
     pub fn stats(&self) -> FrameStats {
@@ -157,10 +195,28 @@ impl<'a> BitmapFrames<'a> {
 
     /// Allocate the lowest free frame, or fail without changing the pool.
     pub fn allocate(&mut self) -> Result<PhysAddr, MemoryError> {
+        self.allocate_contiguous(1).map(FrameExtent::start)
+    }
+
+    /// Allocate a first-fit contiguous extent without partial claims on failure.
+    pub fn allocate_contiguous(&mut self, count: usize) -> Result<FrameExtent, MemoryError> {
+        if count == 0 {
+            return Err(MemoryError::InvalidSize);
+        }
+        count.checked_mul(PAGE_SIZE).ok_or(MemoryError::Overflow)?;
+        let mut run = 0;
         for index in 0..self.count {
-            if !self.occupied(index) {
-                self.used[index / 64] |= 1u64 << (index % 64);
-                return Ok(self.address(index));
+            if self.occupied(index) {
+                run = 0;
+            } else {
+                run += 1;
+            }
+            if run == count {
+                let start = index + 1 - count;
+                for allocated in start..=index {
+                    self.used[allocated / 64] |= 1u64 << (allocated % 64);
+                }
+                return FrameExtent::new(self.address(start), count);
             }
         }
         Err(MemoryError::OutOfMemory)
