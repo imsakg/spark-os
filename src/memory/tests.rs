@@ -254,4 +254,30 @@ fn contiguous_frames_cross_bitmap_words_and_fail_without_partial_claims() {
     );
 }
 
+#[test]
+fn frame_extents_align_physical_addresses_not_pool_indices() {
+    let mut a = [0];
+    let mut b = [0];
+    let mut frames = BitmapFrames::new(PhysAddr::new(PAGE_SIZE), 15, &mut a, &mut b).unwrap();
+    let extent = frames.allocate_aligned(3, 4 * PAGE_SIZE).unwrap();
+    assert_eq!(extent.start(), PhysAddr::new(4 * PAGE_SIZE));
+    assert_eq!(frames.allocate(), Ok(PhysAddr::new(PAGE_SIZE)));
+    assert_eq!(
+        frames.allocate_aligned(2, 8 * PAGE_SIZE).unwrap().start(),
+        PhysAddr::new(8 * PAGE_SIZE)
+    );
+    let before = frames.stats();
+    for alignment in [0, 3 * PAGE_SIZE, PAGE_SIZE / 2] {
+        assert_eq!(
+            frames.allocate_aligned(1, alignment),
+            Err(MemoryError::InvalidAlignment)
+        );
+    }
+    assert_eq!(
+        frames.allocate_aligned(1, 32 * PAGE_SIZE),
+        Err(MemoryError::OutOfMemory)
+    );
+    assert_eq!(frames.stats(), before);
+}
+
 // NEXT TEST

@@ -200,6 +200,19 @@ impl<'a> BitmapFrames<'a> {
 
     /// Allocate a first-fit contiguous extent without partial claims on failure.
     pub fn allocate_contiguous(&mut self, count: usize) -> Result<FrameExtent, MemoryError> {
+        self.allocate_aligned(count, PAGE_SIZE)
+    }
+
+    /// Allocate a contiguous extent aligned in physical bytes, not pool indices.
+    /// Alignment must be a power of two no smaller than one frame.
+    pub fn allocate_aligned(
+        &mut self,
+        count: usize,
+        alignment: usize,
+    ) -> Result<FrameExtent, MemoryError> {
+        if alignment < PAGE_SIZE || !alignment.is_power_of_two() {
+            return Err(MemoryError::InvalidAlignment);
+        }
         if count == 0 {
             return Err(MemoryError::InvalidSize);
         }
@@ -208,7 +221,7 @@ impl<'a> BitmapFrames<'a> {
         for index in 0..self.count {
             if self.occupied(index) {
                 run = 0;
-            } else {
+            } else if run != 0 || self.address(index).get() & (alignment - 1) == 0 {
                 run += 1;
             }
             if run == count {
