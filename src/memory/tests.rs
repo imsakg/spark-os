@@ -280,4 +280,31 @@ fn frame_extents_align_physical_addresses_not_pool_indices() {
     assert_eq!(frames.stats(), before);
 }
 
+#[test]
+fn extent_release_validates_every_frame_before_mutation() {
+    let mut a = [0];
+    let mut b = [0];
+    let mut frames = BitmapFrames::new(PhysAddr::new(0), 8, &mut a, &mut b).unwrap();
+    let extent = frames.allocate_contiguous(3).unwrap();
+    frames.reserve(PhysAddr::new(3 * PAGE_SIZE), 1).unwrap();
+    let before = frames.stats();
+    assert_eq!(
+        frames.free_extent(FrameExtent::new(PhysAddr::new(0), 4).unwrap()),
+        Err(MemoryError::Reserved)
+    );
+    assert_eq!(frames.stats(), before);
+    frames.free(PhysAddr::new(PAGE_SIZE)).unwrap();
+    let before = frames.stats();
+    assert_eq!(frames.free_extent(extent), Err(MemoryError::DoubleFree));
+    assert_eq!(frames.stats(), before);
+    assert_eq!(frames.allocate(), Ok(PhysAddr::new(PAGE_SIZE)));
+    frames.free_extent(extent).unwrap();
+    assert_eq!(frames.stats().allocated, 0);
+    assert_eq!(
+        frames.free_extent(FrameExtent::new(PhysAddr::new(7 * PAGE_SIZE), 2).unwrap()),
+        Err(MemoryError::OutOfRange)
+    );
+    assert_eq!(frames.stats().reserved, 1);
+}
+
 // NEXT TEST

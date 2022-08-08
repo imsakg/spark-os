@@ -181,15 +181,27 @@ impl<'a> BitmapFrames<'a> {
 
     /// Release an allocated frame, rejecting invalid and duplicate frees.
     pub fn free(&mut self, address: PhysAddr) -> Result<(), MemoryError> {
-        let index = self.index(address)?;
-        let mask = 1u64 << (index % 64);
-        if self.reserved[index / 64] & mask != 0 {
-            return Err(MemoryError::Reserved);
+        self.free_extent(FrameExtent::new(address, 1)?)
+    }
+
+    /// Release an entirely allocated extent atomically.
+    ///
+    /// Extents are descriptions, not generation-tagged ownership capabilities;
+    /// callers must not free stale addresses after reuse by another client.
+    pub fn free_extent(&mut self, extent: FrameExtent) -> Result<(), MemoryError> {
+        let indices = self.indices(extent.start(), extent.frame_count())?;
+        for index in indices.clone() {
+            let mask = 1u64 << (index % 64);
+            if self.reserved[index / 64] & mask != 0 {
+                return Err(MemoryError::Reserved);
+            }
+            if self.used[index / 64] & mask == 0 {
+                return Err(MemoryError::DoubleFree);
+            }
         }
-        if self.used[index / 64] & mask == 0 {
-            return Err(MemoryError::DoubleFree);
+        for index in indices {
+            self.used[index / 64] &= !(1u64 << (index % 64));
         }
-        self.used[index / 64] &= !mask;
         Ok(())
     }
 
