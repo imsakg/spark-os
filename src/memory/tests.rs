@@ -307,4 +307,41 @@ fn extent_release_validates_every_frame_before_mutation() {
     assert_eq!(frames.stats().reserved, 1);
 }
 
+#[test]
+fn physical_regions_validate_size_kind_and_cache_attributes() {
+    let ram = RegionAttributes::new(MemoryKind::Usable, CachePolicy::WriteBack).unwrap();
+    assert!(ram.is_allocatable());
+    assert_eq!(ram.kind(), MemoryKind::Usable);
+    assert_eq!(ram.cache(), CachePolicy::WriteBack);
+    assert_eq!(
+        RegionAttributes::new(MemoryKind::Device, CachePolicy::WriteBack),
+        Err(MemoryError::InvalidAttributes)
+    );
+    assert_eq!(
+        RegionAttributes::new(MemoryKind::Usable, CachePolicy::Device),
+        Err(MemoryError::InvalidAttributes)
+    );
+    let device = RegionAttributes::new(MemoryKind::Device, CachePolicy::Device).unwrap();
+    assert!(!device.is_allocatable());
+    let region = MemoryRegion::new(PhysAddr::new(PAGE_SIZE), 2 * PAGE_SIZE, ram).unwrap();
+    assert_eq!(region.start(), PhysAddr::new(PAGE_SIZE));
+    assert_eq!(region.end(), PhysAddr::new(3 * PAGE_SIZE));
+    assert_eq!(region.byte_len(), 2 * PAGE_SIZE);
+    assert_eq!(region.attributes(), ram);
+    assert!(region.contains(PhysAddr::new(3 * PAGE_SIZE - 1)));
+    assert!(!region.contains(region.end()));
+    assert_eq!(
+        MemoryRegion::new(PhysAddr::new(0), 0, ram),
+        Err(MemoryError::InvalidSize)
+    );
+    assert_eq!(
+        MemoryRegion::new(PhysAddr::new(0), 1, ram),
+        Err(MemoryError::Misaligned)
+    );
+    assert_eq!(
+        MemoryRegion::new(PhysAddr::new(usize::MAX & !(PAGE_SIZE - 1)), PAGE_SIZE, ram),
+        Err(MemoryError::Overflow)
+    );
+}
+
 // NEXT TEST

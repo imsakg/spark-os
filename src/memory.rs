@@ -23,6 +23,8 @@ pub enum MemoryError {
     Reserved,
     /// An allocation or reservation already occupies the requested interval.
     AlreadyUsed,
+    /// Memory classification and cache behavior are inconsistent.
+    InvalidAttributes,
 }
 
 /// Round down to a checked power-of-two alignment.
@@ -56,6 +58,9 @@ pub use range::PageRange;
 
 mod frame;
 pub use frame::{BitmapFrames, FrameExtent, FrameStats};
+
+mod region;
+pub use region::{CachePolicy, MemoryKind, MemoryRegion, RegionAttributes};
 
 #[cfg(test)]
 mod tests;
