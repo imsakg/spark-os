@@ -1,5 +1,70 @@
 use super::{FrameExtent, MemoryError, PhysAddr, PAGE_SIZE};
 
+/// A fixed-capacity physical region map sorted by start address.
+/// Insertion rejects all physical overlap without modifying existing regions.
+pub struct RegionMap<const N: usize> {
+    entries: [Option<MemoryRegion>; N],
+    len: usize,
+}
+
+impl<const N: usize> RegionMap<N> {
+    /// Create an empty region map, including valid zero-capacity maps.
+    pub const fn new() -> Self {
+        Self {
+            entries: [None; N],
+            len: 0,
+        }
+    }
+    /// Number of stored regions.
+    pub const fn len(&self) -> usize {
+        self.len
+    }
+    /// Whether no regions are stored.
+    pub const fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+    /// Iterate physical regions in ascending address order.
+    pub fn regions(&self) -> impl Iterator<Item = MemoryRegion> + '_ {
+        self.entries[..self.len].iter().filter_map(|entry| *entry)
+    }
+    /// Insert a disjoint region; capacity and overlap failures are atomic.
+    pub fn insert(&mut self, region: MemoryRegion) -> Result<(), MemoryError> {
+        if self.regions().any(|entry| entry.overlaps(region)) {
+            return Err(MemoryError::AlreadyUsed);
+        }
+        if self.len == N {
+            return Err(MemoryError::Capacity);
+        }
+        let index = self
+            .regions()
+            .take_while(|entry| entry.start() < region.start())
+            .count();
+        for position in (index..self.len).rev() {
+            self.entries[position + 1] = self.entries[position];
+        }
+        self.entries[index] = Some(region);
+        self.len += 1;
+        Ok(())
+    }
+    /// Find the unique region containing a byte address, or report a hole.
+    pub fn lookup(&self, address: PhysAddr) -> Option<MemoryRegion> {
+        self.regions().find(|entry| entry.contains(address))
+    }
+    /// Sum usable RAM bytes; disjoint checked intervals cannot overflow.
+    pub fn usable_bytes(&self) -> usize {
+        self.regions()
+            .filter(|entry| entry.attributes().is_allocatable())
+            .map(MemoryRegion::byte_len)
+            .sum()
+    }
+}
+
+impl<const N: usize> Default for RegionMap<N> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Firmware or platform classification of physical memory.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MemoryKind {

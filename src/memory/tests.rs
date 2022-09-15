@@ -344,4 +344,39 @@ fn physical_regions_validate_size_kind_and_cache_attributes() {
     );
 }
 
+#[test]
+fn region_maps_sort_nonoverlapping_regions_and_preserve_failures() {
+    let ram = RegionAttributes::new(MemoryKind::Usable, CachePolicy::WriteBack).unwrap();
+    let reserved = RegionAttributes::new(MemoryKind::Reserved, CachePolicy::NonCacheable).unwrap();
+    let low = MemoryRegion::new(PhysAddr::new(0), PAGE_SIZE, ram).unwrap();
+    let high = MemoryRegion::new(PhysAddr::new(3 * PAGE_SIZE), PAGE_SIZE, ram).unwrap();
+    let middle = MemoryRegion::new(PhysAddr::new(PAGE_SIZE), 2 * PAGE_SIZE, reserved).unwrap();
+    let mut map = RegionMap::<3>::new();
+    assert!(map.is_empty());
+    map.insert(high).unwrap();
+    map.insert(low).unwrap();
+    map.insert(middle).unwrap();
+    assert_eq!(map.len(), 3);
+    assert_eq!(
+        map.regions().collect::<std::vec::Vec<_>>(),
+        [low, middle, high]
+    );
+    assert_eq!(map.lookup(PhysAddr::new(PAGE_SIZE)), Some(middle));
+    assert_eq!(map.lookup(PhysAddr::new(4 * PAGE_SIZE)), None);
+    assert_eq!(map.usable_bytes(), 2 * PAGE_SIZE);
+    assert_eq!(map.insert(low), Err(MemoryError::AlreadyUsed));
+    assert_eq!(
+        map.insert(MemoryRegion::new(PhysAddr::new(5 * PAGE_SIZE), PAGE_SIZE, ram).unwrap()),
+        Err(MemoryError::Capacity)
+    );
+    assert_eq!(
+        map.regions().collect::<std::vec::Vec<_>>(),
+        [low, middle, high]
+    );
+    assert_eq!(
+        RegionMap::<0>::new().insert(low),
+        Err(MemoryError::Capacity)
+    );
+}
+
 // NEXT TEST

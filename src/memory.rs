@@ -60,7 +60,7 @@ mod frame;
 pub use frame::{BitmapFrames, FrameExtent, FrameStats};
 
 mod region;
-pub use region::{CachePolicy, MemoryKind, MemoryRegion, RegionAttributes};
+pub use region::{CachePolicy, MemoryKind, MemoryRegion, RegionAttributes, RegionMap};
 
 #[cfg(test)]
 mod tests;
