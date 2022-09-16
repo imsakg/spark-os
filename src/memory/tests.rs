@@ -379,4 +379,41 @@ fn region_maps_sort_nonoverlapping_regions_and_preserve_failures() {
     );
 }
 
+#[test]
+fn bump_allocations_align_real_slice_addresses_and_preserve_failure_state() {
+    use core::alloc::Layout;
+    let mut backing = [0xa5; 128];
+    let mut arena = BumpArena::new(&mut backing[1..]);
+    assert_eq!(arena.capacity(), 127);
+    assert_eq!(arena.used(), 0);
+    let block = arena
+        .allocate(Layout::from_size_align(13, 32).unwrap())
+        .unwrap();
+    assert_eq!(block.as_ptr() as usize % 32, 0);
+    assert_eq!(block, &[0xa5; 13]);
+    block.fill(7);
+    let before = arena.used();
+    assert_eq!(arena.remaining(), arena.capacity() - before);
+    assert_eq!(
+        arena
+            .allocate(Layout::from_size_align(200, 1).unwrap())
+            .err(),
+        Some(MemoryError::OutOfMemory)
+    );
+    assert_eq!(
+        arena.allocate(Layout::from_size_align(0, 1).unwrap()).err(),
+        Some(MemoryError::InvalidSize)
+    );
+    assert_eq!(arena.used(), before);
+    let remaining = arena.remaining();
+    arena
+        .allocate(Layout::from_size_align(remaining, 1).unwrap())
+        .unwrap();
+    assert_eq!(arena.remaining(), 0);
+    assert_eq!(
+        arena.allocate(Layout::from_size_align(1, 1).unwrap()).err(),
+        Some(MemoryError::OutOfMemory)
+    );
+}
+
 // NEXT TEST

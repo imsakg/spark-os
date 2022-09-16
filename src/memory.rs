@@ -62,5 +62,8 @@ pub use frame::{BitmapFrames, FrameExtent, FrameStats};
 mod region;
 pub use region::{CachePolicy, MemoryKind, MemoryRegion, RegionAttributes, RegionMap};
 
+mod bump;
+pub use bump::BumpArena;
+
 #[cfg(test)]
 mod tests;
