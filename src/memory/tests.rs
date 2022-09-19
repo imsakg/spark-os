@@ -416,4 +416,41 @@ fn bump_allocations_align_real_slice_addresses_and_preserve_failure_state() {
     );
 }
 
+#[test]
+fn bump_rollback_scrubs_padding_and_rejects_foreign_or_stale_checkpoints() {
+    use core::alloc::Layout;
+    let mut a = [0xa5; 128];
+    let mut b = [0x5a; 128];
+    let mut arena = BumpArena::new(&mut a);
+    let foreign = BumpArena::new(&mut b).checkpoint();
+    arena
+        .allocate(Layout::from_size_align(4, 1).unwrap())
+        .unwrap()
+        .fill(9);
+    let checkpoint = arena.checkpoint();
+    arena
+        .allocate(Layout::from_size_align(8, 64).unwrap())
+        .unwrap()
+        .fill(7);
+    let end = arena.used();
+    let before = arena.contents().to_vec();
+    assert_eq!(arena.rollback(foreign), Err(MemoryError::InvalidCheckpoint));
+    assert_eq!(arena.contents(), before);
+    arena.rollback(checkpoint).unwrap();
+    assert_eq!(arena.used(), 4);
+    assert_eq!(&arena.contents()[..4], &[9; 4]);
+    assert!(arena.contents()[4..end].iter().all(|byte| *byte == 0));
+    assert!(arena.contents()[end..].iter().all(|byte| *byte == 0xa5));
+    assert_eq!(
+        arena.rollback(checkpoint),
+        Err(MemoryError::InvalidCheckpoint)
+    );
+    let next = arena.checkpoint();
+    arena
+        .allocate(Layout::from_size_align(3, 1).unwrap())
+        .unwrap();
+    arena.rollback(next).unwrap();
+    assert_eq!(arena.used(), 4);
+}
+
 // NEXT TEST

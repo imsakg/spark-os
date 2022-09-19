@@ -25,6 +25,8 @@ pub enum MemoryError {
     AlreadyUsed,
     /// Memory classification and cache behavior are inconsistent.
     InvalidAttributes,
+    /// A checkpoint belongs to another arena, epoch, or later position.
+    InvalidCheckpoint,
 }
 
 /// Round down to a checked power-of-two alignment.
@@ -63,7 +65,7 @@ mod region;
 pub use region::{CachePolicy, MemoryKind, MemoryRegion, RegionAttributes, RegionMap};
 
 mod bump;
-pub use bump::BumpArena;
+pub use bump::{BumpArena, BumpCheckpoint};
 
 #[cfg(test)]
 mod tests;
