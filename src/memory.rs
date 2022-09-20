@@ -27,6 +27,10 @@ pub enum MemoryError {
     InvalidAttributes,
     /// A checkpoint belongs to another arena, epoch, or later position.
     InvalidCheckpoint,
+    /// Permissions violate readable W^X or device-execution policy.
+    InvalidPermissions,
+    /// An address exceeds the descriptor's supported 48-bit physical width.
+    AddressWidth,
 }
 
 /// Round down to a checked power-of-two alignment.
@@ -66,6 +70,9 @@ pub use region::{CachePolicy, MemoryKind, MemoryRegion, RegionAttributes, Region
 
 mod bump;
 pub use bump::{BumpArena, BumpCheckpoint};
+
+mod descriptor;
+pub use descriptor::{PageDescriptor, PagePermissions, TableDescriptor};
 
 #[cfg(test)]
 mod tests;

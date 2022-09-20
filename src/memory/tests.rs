@@ -453,4 +453,49 @@ fn bump_rollback_scrubs_padding_and_rejects_foreign_or_stale_checkpoints() {
     assert_eq!(arena.used(), 4);
 }
 
+#[test]
+fn aarch64_descriptors_encode_addresses_and_permission_bits_only() {
+    let data = PagePermissions::new(true, false, false).unwrap();
+    let descriptor =
+        PageDescriptor::new(PhysAddr::new(0x1234_5000), data, CachePolicy::WriteBack).unwrap();
+    assert_eq!(descriptor.output_address(), PhysAddr::new(0x1234_5000));
+    assert_eq!(descriptor.bits() & 0xfff, 3 | (3 << 8) | (1 << 10));
+    assert_eq!(
+        descriptor.bits() & ((1 << 53) | (1 << 54)),
+        (1 << 53) | (1 << 54)
+    );
+    assert!(data.writable());
+    assert!(!data.executable());
+    assert!(!data.user());
+    let user_code = PagePermissions::new(false, true, true).unwrap();
+    let user = PageDescriptor::new(PhysAddr::new(0), user_code, CachePolicy::NonCacheable).unwrap();
+    assert_eq!(
+        user.bits() & 0xfff,
+        3 | (1 << 2) | (3 << 6) | (3 << 8) | (1 << 10) | (1 << 11)
+    );
+    assert_eq!(user.bits() & ((1 << 53) | (1 << 54)), 1 << 53);
+    assert_eq!(
+        PagePermissions::new(true, true, false),
+        Err(MemoryError::InvalidPermissions)
+    );
+    assert_eq!(
+        PageDescriptor::new(PhysAddr::new(1), data, CachePolicy::WriteBack),
+        Err(MemoryError::Misaligned)
+    );
+    assert_eq!(
+        PageDescriptor::new(PhysAddr::new(1usize << 48), data, CachePolicy::WriteBack),
+        Err(MemoryError::AddressWidth)
+    );
+    assert_eq!(
+        PageDescriptor::new(PhysAddr::new(0), user_code, CachePolicy::Device),
+        Err(MemoryError::InvalidPermissions)
+    );
+    let table = TableDescriptor::new(PhysAddr::new(0x4000)).unwrap();
+    assert_eq!(table.bits(), 0x4003);
+    assert_eq!(
+        TableDescriptor::new(PhysAddr::new(0x4001)),
+        Err(MemoryError::Misaligned)
+    );
+}
+
 // NEXT TEST
