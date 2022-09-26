@@ -74,5 +74,8 @@ pub use bump::{BumpArena, BumpCheckpoint};
 mod descriptor;
 pub use descriptor::{PageDescriptor, PagePermissions, TableDescriptor};
 
+mod mapping;
+pub use mapping::{Mapping, MappingTable};
+
 #[cfg(test)]
 mod tests;

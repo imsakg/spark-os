@@ -498,4 +498,67 @@ fn aarch64_descriptors_encode_addresses_and_permission_bits_only() {
     );
 }
 
+#[test]
+fn mapping_tables_keep_checked_disjoint_virtual_extents() {
+    let data = PagePermissions::new(true, false, false).unwrap();
+    let first = Mapping::new(
+        PageRange::new(VirtAddr::new(0x4000), 2).unwrap(),
+        PhysAddr::new(0x1000),
+        data,
+        CachePolicy::WriteBack,
+    )
+    .unwrap();
+    let second = Mapping::new(
+        PageRange::new(VirtAddr::new(0x6000), 1).unwrap(),
+        PhysAddr::new(0xa000),
+        data,
+        CachePolicy::WriteBack,
+    )
+    .unwrap();
+    let mut table = MappingTable::<2>::new();
+    assert!(table.is_empty());
+    table.map(second).unwrap();
+    table.map(first).unwrap();
+    assert_eq!(table.len(), 2);
+    assert_eq!(
+        table.mappings().collect::<std::vec::Vec<_>>(),
+        [first, second]
+    );
+    assert_eq!(first.physical_start(), PhysAddr::new(0x1000));
+    assert_eq!(first.range().page_count(), 2);
+    assert_eq!(first.permissions(), data);
+    assert_eq!(first.cache(), CachePolicy::WriteBack);
+    assert_eq!(table.map(first), Err(MemoryError::AlreadyUsed));
+    let third = Mapping::new(
+        PageRange::new(VirtAddr::new(0x8000), 1).unwrap(),
+        PhysAddr::new(0xb000),
+        data,
+        CachePolicy::WriteBack,
+    )
+    .unwrap();
+    assert_eq!(table.map(third), Err(MemoryError::Capacity));
+    assert_eq!(
+        MappingTable::<0>::new().map(first),
+        Err(MemoryError::Capacity)
+    );
+    assert_eq!(
+        Mapping::new(
+            PageRange::new(VirtAddr::new(0), 0).unwrap(),
+            PhysAddr::new(0),
+            data,
+            CachePolicy::WriteBack
+        ),
+        Err(MemoryError::InvalidSize)
+    );
+    assert_eq!(
+        Mapping::new(
+            first.range(),
+            PhysAddr::new(usize::MAX & !(PAGE_SIZE - 1)),
+            data,
+            CachePolicy::WriteBack
+        ),
+        Err(MemoryError::Overflow)
+    );
+}
+
 // NEXT TEST
