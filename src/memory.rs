@@ -31,6 +31,10 @@ pub enum MemoryError {
     InvalidPermissions,
     /// An address exceeds the descriptor's supported 48-bit physical width.
     AddressWidth,
+    /// No software mapping covers the requested virtual address or exact range.
+    NotMapped,
+    /// The mapping does not permit the requested access or privilege level.
+    PermissionDenied,
 }
 
 /// Round down to a checked power-of-two alignment.
@@ -75,7 +79,7 @@ mod descriptor;
 pub use descriptor::{PageDescriptor, PagePermissions, TableDescriptor};
 
 mod mapping;
-pub use mapping::{Mapping, MappingTable};
+pub use mapping::{AccessType, Mapping, MappingTable};
 
 #[cfg(test)]
 mod tests;

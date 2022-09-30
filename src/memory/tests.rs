@@ -561,4 +561,62 @@ fn mapping_tables_keep_checked_disjoint_virtual_extents() {
     );
 }
 
+#[test]
+fn translation_preserves_byte_offsets_and_enforces_access() {
+    let mut table = MappingTable::<2>::new();
+    let user_data = Mapping::new(
+        PageRange::new(VirtAddr::new(0x4000), 2).unwrap(),
+        PhysAddr::new(0x9000),
+        PagePermissions::new(true, false, true).unwrap(),
+        CachePolicy::WriteBack,
+    )
+    .unwrap();
+    let code = Mapping::new(
+        PageRange::new(VirtAddr::new(0x8000), 1).unwrap(),
+        PhysAddr::new(0x1000),
+        PagePermissions::new(false, true, false).unwrap(),
+        CachePolicy::WriteBack,
+    )
+    .unwrap();
+    table.map(user_data).unwrap();
+    table.map(code).unwrap();
+    assert_eq!(table.lookup(VirtAddr::new(0x4fff)), Some(user_data));
+    assert_eq!(
+        table.translate(VirtAddr::new(0x5123)),
+        Ok(PhysAddr::new(0xa123))
+    );
+    assert_eq!(
+        table.translate(VirtAddr::new(0x5fff)),
+        Ok(PhysAddr::new(0xafff))
+    );
+    assert_eq!(
+        table.translate(VirtAddr::new(0x6000)),
+        Err(MemoryError::NotMapped)
+    );
+    assert_eq!(
+        user_data.translate(VirtAddr::new(0x3fff)),
+        Err(MemoryError::NotMapped)
+    );
+    assert_eq!(
+        table.resolve(VirtAddr::new(0x4000), AccessType::Write, true),
+        Ok(PhysAddr::new(0x9000))
+    );
+    assert_eq!(
+        table.resolve(VirtAddr::new(0x4000), AccessType::Execute, true),
+        Err(MemoryError::PermissionDenied)
+    );
+    assert_eq!(
+        table.resolve(VirtAddr::new(0x8000), AccessType::Read, true),
+        Err(MemoryError::PermissionDenied)
+    );
+    assert_eq!(
+        table.resolve(VirtAddr::new(0x8000), AccessType::Write, false),
+        Err(MemoryError::PermissionDenied)
+    );
+    assert_eq!(
+        table.resolve(VirtAddr::new(0x8123), AccessType::Execute, false),
+        Ok(PhysAddr::new(0x1123))
+    );
+}
+
 // NEXT TEST

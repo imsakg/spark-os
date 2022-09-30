@@ -1,4 +1,17 @@
-use super::{CachePolicy, FrameExtent, MemoryError, PagePermissions, PageRange, PhysAddr};
+use super::{
+    CachePolicy, FrameExtent, MemoryError, PagePermissions, PageRange, PhysAddr, VirtAddr,
+};
+
+/// Requested access kind for software permission checks.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AccessType {
+    /// Read initialized mapped bytes.
+    Read,
+    /// Write mapped bytes.
+    Write,
+    /// Execute at the explicitly selected privilege level.
+    Execute,
+}
 
 /// Checked software mapping of contiguous virtual pages to physical frames.
 /// This value does not own frames or install a hardware page table.
@@ -10,6 +23,27 @@ pub struct Mapping {
     cache: CachePolicy,
 }
 impl Mapping {
+    /// Translate a byte address, preserving the offset across the whole extent.
+    pub fn translate(self, address: VirtAddr) -> Result<PhysAddr, MemoryError> {
+        if !self.range.contains(address) {
+            return Err(MemoryError::NotMapped);
+        }
+        self.physical_start()
+            .checked_add(address.get() - self.range.start().get())
+    }
+    fn check_access(self, access: AccessType, from_user: bool) -> Result<(), MemoryError> {
+        let allowed = match access {
+            AccessType::Read => true,
+            AccessType::Write => self.permissions.writable(),
+            AccessType::Execute => {
+                self.permissions.executable() && self.permissions.user() == from_user
+            }
+        };
+        if !allowed || (from_user && !self.permissions.user()) {
+            return Err(MemoryError::PermissionDenied);
+        }
+        Ok(())
+    }
     /// Create a nonempty mapping with representable physical and virtual ends.
     pub fn new(
         range: PageRange,
@@ -52,6 +86,29 @@ pub struct MappingTable<const N: usize> {
     len: usize,
 }
 impl<const N: usize> MappingTable<N> {
+    /// Find the unique extent containing a virtual byte address.
+    pub fn lookup(&self, address: VirtAddr) -> Option<Mapping> {
+        self.mappings()
+            .find(|entry| entry.range().contains(address))
+    }
+    /// Translate a byte address without claiming any access permission.
+    pub fn translate(&self, address: VirtAddr) -> Result<PhysAddr, MemoryError> {
+        self.lookup(address)
+            .ok_or(MemoryError::NotMapped)?
+            .translate(address)
+    }
+    /// Translate after checking access and EL0/EL1 execution restrictions.
+    /// This software check does not model PAN, privilege overrides, or live MMU state.
+    pub fn resolve(
+        &self,
+        address: VirtAddr,
+        access: AccessType,
+        from_user: bool,
+    ) -> Result<PhysAddr, MemoryError> {
+        let mapping = self.lookup(address).ok_or(MemoryError::NotMapped)?;
+        mapping.check_access(access, from_user)?;
+        mapping.translate(address)
+    }
     /// Create an empty table without runtime allocation.
     pub const fn new() -> Self {
         Self {
