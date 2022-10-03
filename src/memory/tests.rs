@@ -619,4 +619,110 @@ fn translation_preserves_byte_offsets_and_enforces_access() {
     );
 }
 
+#[test]
+fn physical_aliases_cannot_bypass_wx_cache_or_privilege_policy() {
+    let range = |start, count| PageRange::new(VirtAddr::new(start), count).unwrap();
+    let data = PagePermissions::new(true, false, false).unwrap();
+    let code = PagePermissions::new(false, true, false).unwrap();
+    let ro = PagePermissions::new(false, false, false).unwrap();
+    let user = PagePermissions::new(false, false, true).unwrap();
+    let mut table = MappingTable::<8>::new();
+    table
+        .map(
+            Mapping::new(
+                range(0x1000, 2),
+                PhysAddr::new(0x8000),
+                data,
+                CachePolicy::WriteBack,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    assert_eq!(
+        table.map(
+            Mapping::new(
+                range(0x4000, 2),
+                PhysAddr::new(0x9000),
+                code,
+                CachePolicy::WriteBack
+            )
+            .unwrap()
+        ),
+        Err(MemoryError::InvalidPermissions)
+    );
+    assert_eq!(
+        table.map(
+            Mapping::new(
+                range(0x4000, 1),
+                PhysAddr::new(0x8000),
+                ro,
+                CachePolicy::NonCacheable
+            )
+            .unwrap()
+        ),
+        Err(MemoryError::InvalidAttributes)
+    );
+    assert_eq!(
+        table.map(
+            Mapping::new(
+                range(0x4000, 1),
+                PhysAddr::new(0x8000),
+                user,
+                CachePolicy::WriteBack
+            )
+            .unwrap()
+        ),
+        Err(MemoryError::InvalidPermissions)
+    );
+    assert_eq!(table.len(), 1);
+    table
+        .map(
+            Mapping::new(
+                range(0x4000, 1),
+                PhysAddr::new(0x8000),
+                ro,
+                CachePolicy::WriteBack,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    table
+        .map(
+            Mapping::new(
+                range(0x6000, 1),
+                PhysAddr::new(0xa000),
+                code,
+                CachePolicy::WriteBack,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    assert_eq!(
+        table.map(
+            Mapping::new(
+                range(0x7000, 1),
+                PhysAddr::new(0xa000),
+                data,
+                CachePolicy::WriteBack
+            )
+            .unwrap()
+        ),
+        Err(MemoryError::InvalidPermissions)
+    );
+    assert_eq!(
+        Mapping::new(
+            range(0x8000, 1),
+            PhysAddr::new(0),
+            user,
+            CachePolicy::Device
+        ),
+        Err(MemoryError::InvalidPermissions)
+    );
+    assert_eq!(
+        PageDescriptor::new(PhysAddr::new(0), user, CachePolicy::Device),
+        Err(MemoryError::InvalidPermissions)
+    );
+    assert_eq!(table.len(), 3);
+}
+
 // NEXT TEST

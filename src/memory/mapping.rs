@@ -44,6 +44,22 @@ impl Mapping {
         }
         Ok(())
     }
+    fn check_alias(self, other: Self) -> Result<(), MemoryError> {
+        if self.physical.start() < other.physical.end()
+            && other.physical.start() < self.physical.end()
+        {
+            if self.cache != other.cache {
+                return Err(MemoryError::InvalidAttributes);
+            }
+            if self.permissions.user() != other.permissions.user()
+                || (self.permissions.writable() && other.permissions.executable())
+                || (other.permissions.writable() && self.permissions.executable())
+            {
+                return Err(MemoryError::InvalidPermissions);
+            }
+        }
+        Ok(())
+    }
     /// Create a nonempty mapping with representable physical and virtual ends.
     pub fn new(
         range: PageRange,
@@ -51,7 +67,7 @@ impl Mapping {
         permissions: PagePermissions,
         cache: CachePolicy,
     ) -> Result<Self, MemoryError> {
-        if cache == CachePolicy::Device && permissions.executable() {
+        if cache == CachePolicy::Device && (permissions.executable() || permissions.user()) {
             return Err(MemoryError::InvalidPermissions);
         }
         Ok(Self {
@@ -81,6 +97,9 @@ impl Mapping {
 
 /// Fixed-capacity software mapping plan sorted by virtual start address.
 /// Callers supply synchronization and all later MMU/TLB/cache operations.
+/// Physical aliases within this table must share cache policy and user access,
+/// and no physical byte may be writable through one alias and executable through another.
+/// Mappings in other tables or installed by platform code are not inspected.
 pub struct MappingTable<const N: usize> {
     entries: [Option<Mapping>; N],
     len: usize,
@@ -135,6 +154,9 @@ impl<const N: usize> MappingTable<N> {
             .any(|entry| entry.range().overlaps(mapping.range()))
         {
             return Err(MemoryError::AlreadyUsed);
+        }
+        for entry in self.mappings() {
+            mapping.check_alias(entry)?;
         }
         if self.len == N {
             return Err(MemoryError::Capacity);

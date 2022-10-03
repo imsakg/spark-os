@@ -27,7 +27,7 @@ pub enum MemoryError {
     InvalidAttributes,
     /// A checkpoint belongs to another arena, epoch, or later position.
     InvalidCheckpoint,
-    /// Permissions violate readable W^X or device-execution policy.
+    /// Permissions violate W^X, alias privilege, or kernel-only device policy.
     InvalidPermissions,
     /// An address exceeds the descriptor's supported 48-bit physical width.
     AddressWidth,

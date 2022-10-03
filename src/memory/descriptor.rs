@@ -58,7 +58,7 @@ impl PageDescriptor {
         cache: CachePolicy,
     ) -> Result<Self, MemoryError> {
         let address = descriptor_address(address)?;
-        if cache == CachePolicy::Device && permissions.executable() {
+        if cache == CachePolicy::Device && (permissions.executable() || permissions.user()) {
             return Err(MemoryError::InvalidPermissions);
         }
         let (attribute, shareability) = match cache {
