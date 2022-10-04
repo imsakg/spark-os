@@ -128,6 +128,28 @@ impl<const N: usize> MappingTable<N> {
         mapping.check_access(access, from_user)?;
         mapping.translate(address)
     }
+    fn exact_index(&self, range: PageRange) -> Result<usize, MemoryError> {
+        if range.is_empty() {
+            return Err(MemoryError::InvalidSize);
+        }
+        self.entries[..self.len]
+            .iter()
+            .position(|entry| entry.map(|mapping| mapping.range()) == Some(range))
+            .ok_or(MemoryError::NotMapped)
+    }
+    /// Remove and return exactly one stored extent, without freeing its frames.
+    /// Empty ranges are invalid; partial, combined, and absent ranges are not mapped.
+    /// Failure leaves the table unchanged. This does not invalidate a hardware TLB.
+    pub fn unmap(&mut self, range: PageRange) -> Result<Mapping, MemoryError> {
+        let index = self.exact_index(range)?;
+        let removed = self.entries[index].ok_or(MemoryError::NotMapped)?;
+        for position in index + 1..self.len {
+            self.entries[position - 1] = self.entries[position];
+        }
+        self.len -= 1;
+        self.entries[self.len] = None;
+        Ok(removed)
+    }
     /// Create an empty table without runtime allocation.
     pub const fn new() -> Self {
         Self {

@@ -725,4 +725,61 @@ fn physical_aliases_cannot_bypass_wx_cache_or_privilege_policy() {
     assert_eq!(table.len(), 3);
 }
 
+#[test]
+fn unmap_requires_exact_extents_and_reuses_compacted_slots() {
+    let make = |start| {
+        Mapping::new(
+            PageRange::new(VirtAddr::new(start), 2).unwrap(),
+            PhysAddr::new(start + 0x10000),
+            PagePermissions::new(true, false, false).unwrap(),
+            CachePolicy::WriteBack,
+        )
+        .unwrap()
+    };
+    let low = make(0x1000);
+    let middle = make(0x4000);
+    let high = make(0x8000);
+    let mut table = MappingTable::<3>::new();
+    for mapping in [high, low, middle] {
+        table.map(mapping).unwrap();
+    }
+    let before = table.mappings().collect::<std::vec::Vec<_>>();
+    assert_eq!(
+        table.unmap(PageRange::new(VirtAddr::new(0x4000), 0).unwrap()),
+        Err(MemoryError::InvalidSize)
+    );
+    for range in [
+        PageRange::new(VirtAddr::new(0x4000), 1).unwrap(),
+        PageRange::new(VirtAddr::new(0x5000), 1).unwrap(),
+        PageRange::new(VirtAddr::new(0x4000), 3).unwrap(),
+        PageRange::new(VirtAddr::new(0x6000), 1).unwrap(),
+    ] {
+        assert_eq!(table.unmap(range), Err(MemoryError::NotMapped));
+        assert_eq!(table.mappings().collect::<std::vec::Vec<_>>(), before);
+    }
+    assert_eq!(table.unmap(middle.range()), Ok(middle));
+    assert_eq!(
+        table.translate(VirtAddr::new(0x4000)),
+        Err(MemoryError::NotMapped)
+    );
+    assert_eq!(table.mappings().collect::<std::vec::Vec<_>>(), [low, high]);
+    table.map(middle).unwrap();
+    assert_eq!(table.unmap(low.range()), Ok(low));
+    assert_eq!(table.unmap(high.range()), Ok(high));
+    assert_eq!(table.unmap(middle.range()), Ok(middle));
+    assert!(table.is_empty());
+    assert_eq!(table.unmap(middle.range()), Err(MemoryError::NotMapped));
+    for mapping in [high, middle, low] {
+        table.map(mapping).unwrap();
+    }
+    assert_eq!(
+        table.mappings().collect::<std::vec::Vec<_>>(),
+        [low, middle, high]
+    );
+    assert_eq!(
+        MappingTable::<0>::new().unmap(low.range()),
+        Err(MemoryError::NotMapped)
+    );
+}
+
 // NEXT TEST
