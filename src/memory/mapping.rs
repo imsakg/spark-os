@@ -150,6 +150,34 @@ impl<const N: usize> MappingTable<N> {
         self.entries[self.len] = None;
         Ok(removed)
     }
+    /// Replace permissions on exactly one extent and return the previous mapping.
+    /// The physical extent, cache policy, ordering, and table length are preserved.
+    /// Device and physical-alias checks complete before any mutation; this also
+    /// works at full capacity and permits W-to-X transitions without a conflicting alias.
+    /// No hardware permission, TLB, or instruction-cache update is performed.
+    pub fn protect(
+        &mut self,
+        range: PageRange,
+        permissions: PagePermissions,
+    ) -> Result<Mapping, MemoryError> {
+        let index = self.exact_index(range)?;
+        let previous = self.entries[index].ok_or(MemoryError::NotMapped)?;
+        let replacement = Mapping::new(
+            range,
+            previous.physical_start(),
+            permissions,
+            previous.cache(),
+        )?;
+        for (other_index, entry) in self.entries[..self.len].iter().enumerate() {
+            if other_index != index {
+                if let Some(other) = entry {
+                    replacement.check_alias(*other)?;
+                }
+            }
+        }
+        self.entries[index] = Some(replacement);
+        Ok(previous)
+    }
     /// Create an empty table without runtime allocation.
     pub const fn new() -> Self {
         Self {

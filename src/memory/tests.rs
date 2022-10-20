@@ -782,4 +782,104 @@ fn unmap_requires_exact_extents_and_reuses_compacted_slots() {
     );
 }
 
+#[test]
+fn protect_revalidates_aliases_before_atomic_permission_replacement() {
+    let data = PagePermissions::new(true, false, false).unwrap();
+    let code = PagePermissions::new(false, true, false).unwrap();
+    let ro = PagePermissions::new(false, false, false).unwrap();
+    let user = PagePermissions::new(false, false, true).unwrap();
+    let range = PageRange::new(VirtAddr::new(0x1000), 2).unwrap();
+    let alias_range = PageRange::new(VirtAddr::new(0x5000), 1).unwrap();
+    let original =
+        Mapping::new(range, PhysAddr::new(0x8000), data, CachePolicy::WriteBack).unwrap();
+    let alias = Mapping::new(
+        alias_range,
+        PhysAddr::new(0x9000),
+        data,
+        CachePolicy::WriteBack,
+    )
+    .unwrap();
+    let mut table = MappingTable::<2>::new();
+    table.map(alias).unwrap();
+    table.map(original).unwrap();
+    let before = table.mappings().collect::<std::vec::Vec<_>>();
+    for permissions in [code, user] {
+        assert_eq!(
+            table.protect(range, permissions),
+            Err(MemoryError::InvalidPermissions)
+        );
+        assert_eq!(table.mappings().collect::<std::vec::Vec<_>>(), before);
+    }
+    assert_eq!(
+        table.protect(PageRange::new(range.start(), 0).unwrap(), ro),
+        Err(MemoryError::InvalidSize)
+    );
+    for missing in [
+        PageRange::new(range.start(), 1).unwrap(),
+        PageRange::new(VirtAddr::new(0x2000), 1).unwrap(),
+        PageRange::new(VirtAddr::new(0x3000), 1).unwrap(),
+    ] {
+        assert_eq!(table.protect(missing, ro), Err(MemoryError::NotMapped));
+    }
+    assert_eq!(table.mappings().collect::<std::vec::Vec<_>>(), before);
+    assert_eq!(table.protect(alias_range, ro), Ok(alias));
+    assert_eq!(table.protect(range, code), Ok(original));
+    let changed = table.lookup(range.start()).unwrap();
+    assert_eq!(changed.permissions(), code);
+    assert_eq!(changed.physical_start(), original.physical_start());
+    assert_eq!(changed.cache(), original.cache());
+    assert_eq!(
+        table.resolve(VirtAddr::new(0x2fff), AccessType::Execute, false),
+        Ok(PhysAddr::new(0x9fff))
+    );
+    assert_eq!(
+        table.resolve(range.start(), AccessType::Write, false),
+        Err(MemoryError::PermissionDenied)
+    );
+    let before = table.mappings().collect::<std::vec::Vec<_>>();
+    assert_eq!(
+        table.protect(alias_range, data),
+        Err(MemoryError::InvalidPermissions)
+    );
+    assert_eq!(table.mappings().collect::<std::vec::Vec<_>>(), before);
+    table.unmap(alias_range).unwrap();
+    assert_eq!(table.protect(range, user), Ok(changed));
+    assert_eq!(
+        table.resolve(range.start(), AccessType::Read, true),
+        Ok(PhysAddr::new(0x8000))
+    );
+    assert_eq!(table.protect(range, code).unwrap().permissions(), user);
+    assert_eq!(table.len(), 1);
+}
+
+#[test]
+fn protect_preserves_kernel_only_nonexecutable_device_mappings() {
+    let ro = PagePermissions::new(false, false, false).unwrap();
+    let mapping = Mapping::new(
+        PageRange::new(VirtAddr::new(0x1000), 1).unwrap(),
+        PhysAddr::new(0x9000),
+        ro,
+        CachePolicy::Device,
+    )
+    .unwrap();
+    let mut table = MappingTable::<1>::new();
+    table.map(mapping).unwrap();
+    for permissions in [
+        PagePermissions::new(false, true, false).unwrap(),
+        PagePermissions::new(true, false, true).unwrap(),
+    ] {
+        assert_eq!(
+            table.protect(mapping.range(), permissions),
+            Err(MemoryError::InvalidPermissions)
+        );
+        assert_eq!(table.lookup(mapping.range().start()), Some(mapping));
+    }
+    let data = PagePermissions::new(true, false, false).unwrap();
+    assert_eq!(table.protect(mapping.range(), data), Ok(mapping));
+    assert_eq!(
+        table.lookup(mapping.range().start()).unwrap().cache(),
+        CachePolicy::Device
+    );
+}
+
 // NEXT TEST
