@@ -882,4 +882,62 @@ fn protect_preserves_kernel_only_nonexecutable_device_mappings() {
     );
 }
 
+#[test]
+fn checked_byte_helpers_validate_all_bounds_before_writing() {
+    let mut bytes = [0xa5; 8];
+    assert_eq!(zero_bytes(&mut bytes, 2, 3), Ok(()));
+    assert_eq!(bytes, [0xa5, 0xa5, 0, 0, 0, 0xa5, 0xa5, 0xa5]);
+    let before = bytes;
+    for (offset, len, error) in [
+        (7, 2, MemoryError::OutOfRange),
+        (9, 0, MemoryError::OutOfRange),
+        (usize::MAX, 1, MemoryError::Overflow),
+    ] {
+        assert_eq!(zero_bytes(&mut bytes, offset, len), Err(error));
+        assert_eq!(bytes, before);
+    }
+    assert_eq!(zero_bytes(&mut bytes, 8, 0), Ok(()));
+    let source = [1, 2, 3, 4, 5];
+    assert_eq!(copy_bytes(&mut bytes, 5, &source, 1, 3), Ok(()));
+    assert_eq!(&bytes[5..], &[2, 3, 4]);
+    let before = bytes;
+    for (dst, src, len, error) in [
+        (7, 0, 2, MemoryError::OutOfRange),
+        (0, 4, 2, MemoryError::OutOfRange),
+        (usize::MAX, 0, 1, MemoryError::Overflow),
+        (0, usize::MAX, 1, MemoryError::Overflow),
+        (0, 6, 0, MemoryError::OutOfRange),
+        (9, 0, 0, MemoryError::OutOfRange),
+    ] {
+        assert_eq!(copy_bytes(&mut bytes, dst, &source, src, len), Err(error));
+        assert_eq!(bytes, before);
+    }
+    assert_eq!(copy_bytes(&mut bytes, 8, &source, 5, 0), Ok(()));
+    assert_eq!(zero_bytes(&mut [], 0, 0), Ok(()));
+    assert_eq!(copy_bytes(&mut [], 0, &[], 0, 0), Ok(()));
+}
+
+#[test]
+fn checked_moves_support_both_overlap_directions_and_failure_atomicity() {
+    let mut right = [0, 1, 2, 3, 4, 5, 6, 7];
+    assert_eq!(move_bytes(&mut right, 0, 2, 6), Ok(()));
+    assert_eq!(right, [0, 1, 0, 1, 2, 3, 4, 5]);
+    let mut left = [0, 1, 2, 3, 4, 5, 6, 7];
+    assert_eq!(move_bytes(&mut left, 2, 0, 6), Ok(()));
+    assert_eq!(left, [2, 3, 4, 5, 6, 7, 6, 7]);
+    let before = left;
+    assert_eq!(move_bytes(&mut left, 0, 0, 8), Ok(()));
+    assert_eq!(move_bytes(&mut left, 8, 8, 0), Ok(()));
+    for (src, dst, len, error) in [
+        (7, 0, 2, MemoryError::OutOfRange),
+        (0, 7, 2, MemoryError::OutOfRange),
+        (usize::MAX, 0, 1, MemoryError::Overflow),
+        (0, usize::MAX, 1, MemoryError::Overflow),
+    ] {
+        assert_eq!(move_bytes(&mut left, src, dst, len), Err(error));
+        assert_eq!(left, before);
+    }
+    assert_eq!(move_bytes(&mut [], 0, 0, 0), Ok(()));
+}
+
 // NEXT TEST

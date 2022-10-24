@@ -81,5 +81,8 @@ pub use descriptor::{PageDescriptor, PagePermissions, TableDescriptor};
 mod mapping;
 pub use mapping::{AccessType, Mapping, MappingTable};
 
+mod bytes;
+pub use bytes::{copy_bytes, move_bytes, zero_bytes};
+
 #[cfg(test)]
 mod tests;
