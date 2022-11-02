@@ -35,6 +35,8 @@ pub enum MemoryError {
     NotMapped,
     /// The mapping does not permit the requested access or privilege level.
     PermissionDenied,
+    /// A runtime memory-service self-test observed an unexpected invariant result.
+    SelfTestFailed,
 }
 
 /// Round down to a checked power-of-two alignment.
@@ -83,6 +85,9 @@ pub use mapping::{AccessType, Mapping, MappingTable};
 
 mod bytes;
 pub use bytes::{copy_bytes, move_bytes, zero_bytes};
+
+mod selftest;
+pub use selftest::self_test;
 
 #[cfg(test)]
 mod tests;

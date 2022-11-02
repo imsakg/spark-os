@@ -940,4 +940,124 @@ fn checked_moves_support_both_overlap_directions_and_failure_atomicity() {
     assert_eq!(move_bytes(&mut [], 0, 0, 0), Ok(()));
 }
 
+#[test]
+fn runtime_self_test_is_public_repeatable_and_side_effect_free() {
+    for _ in 0..32 {
+        assert_eq!(self_test(), Ok(()));
+    }
+}
+
+#[test]
+fn top_of_address_space_extents_keep_exclusive_ends_representable() {
+    let top = usize::MAX & !(PAGE_SIZE - 1);
+    let start = top - PAGE_SIZE;
+    let range = PageRange::new(VirtAddr::new(start), 1).unwrap();
+    let mut used = [u64::MAX];
+    let mut reserved = [u64::MAX];
+    let mut frames = BitmapFrames::new(PhysAddr::new(start), 1, &mut used, &mut reserved).unwrap();
+    let extent = frames.allocate_contiguous(1).unwrap();
+    assert_eq!(extent.end(), PhysAddr::new(top));
+    assert_eq!(frames.allocate(), Err(MemoryError::OutOfMemory));
+    let mapping = Mapping::new(
+        range,
+        extent.start(),
+        PagePermissions::new(false, true, false).unwrap(),
+        CachePolicy::WriteBack,
+    )
+    .unwrap();
+    let mut table = MappingTable::<1>::new();
+    table.map(mapping).unwrap();
+    assert_eq!(
+        table.resolve(VirtAddr::new(top - 1), AccessType::Execute, false),
+        Ok(PhysAddr::new(top - 1))
+    );
+    assert_eq!(
+        table.translate(VirtAddr::new(top)),
+        Err(MemoryError::NotMapped)
+    );
+    assert_eq!(
+        PageRange::new(VirtAddr::new(top), 1),
+        Err(MemoryError::Overflow)
+    );
+    assert_eq!(
+        FrameExtent::new(PhysAddr::new(top), 1),
+        Err(MemoryError::Overflow)
+    );
+    assert_eq!(
+        PageRange::covering(VirtAddr::new(top - 1), 1).unwrap(),
+        range
+    );
+    assert_eq!(
+        PageRange::covering(VirtAddr::new(top), 1),
+        Err(MemoryError::Overflow)
+    );
+    assert_eq!(table.unmap(range), Ok(mapping));
+    assert_eq!(frames.stats().allocated, 1);
+    frames.free_extent(extent).unwrap();
+    assert_eq!(frames.stats().free, 1);
+}
+
+#[test]
+fn descriptor_permission_matrix_preserves_privilege_and_device_restrictions() {
+    for user in [false, true] {
+        for (writable, executable) in [(false, false), (true, false), (false, true)] {
+            let permissions = PagePermissions::new(writable, executable, user).unwrap();
+            for cache in [
+                CachePolicy::WriteBack,
+                CachePolicy::NonCacheable,
+                CachePolicy::Device,
+            ] {
+                let descriptor = PageDescriptor::new(
+                    PhysAddr::new((1usize << 48) - PAGE_SIZE),
+                    permissions,
+                    cache,
+                );
+                if cache == CachePolicy::Device && (user || executable) {
+                    assert_eq!(descriptor, Err(MemoryError::InvalidPermissions));
+                    continue;
+                }
+                let descriptor = descriptor.unwrap();
+                let bits = descriptor.bits();
+                assert_eq!(
+                    descriptor.output_address().get(),
+                    (1usize << 48) - PAGE_SIZE
+                );
+                assert_eq!(
+                    (bits >> 6) & 3,
+                    u64::from(user) | (u64::from(!writable) << 1)
+                );
+                assert_eq!((bits >> 53) & 1, u64::from(user || !executable));
+                assert_eq!((bits >> 54) & 1, u64::from(!user || !executable));
+                assert_eq!((bits >> 10) & 1, 1);
+                let (index, share) = match cache {
+                    CachePolicy::WriteBack => (0, 3),
+                    CachePolicy::NonCacheable => (1, 3),
+                    CachePolicy::Device => (2, 2),
+                };
+                assert_eq!((bits >> 2) & 7, index);
+                assert_eq!((bits >> 8) & 3, share);
+            }
+        }
+    }
+}
+
+#[test]
+fn empty_arenas_fail_allocations_without_invalidating_valid_checkpoints() {
+    let mut arena = BumpArena::new(&mut []);
+    let checkpoint = arena.checkpoint();
+    assert_eq!(
+        arena
+            .allocate(core::alloc::Layout::from_size_align(1, 1).unwrap())
+            .err(),
+        Some(MemoryError::OutOfMemory)
+    );
+    assert_eq!(arena.used(), 0);
+    assert_eq!(arena.remaining(), 0);
+    assert_eq!(arena.rollback(checkpoint), Ok(()));
+    assert_eq!(
+        arena.rollback(checkpoint),
+        Err(MemoryError::InvalidCheckpoint)
+    );
+}
+
 // NEXT TEST
