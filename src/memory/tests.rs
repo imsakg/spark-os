@@ -1059,5 +1059,3 @@ fn empty_arenas_fail_allocations_without_invalidating_valid_checkpoints() {
         Err(MemoryError::InvalidCheckpoint)
     );
 }
-
-// NEXT TEST
