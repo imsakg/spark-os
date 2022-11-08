@@ -1,4 +1,5 @@
 //! Physical memory and address-space management.
+#![doc = include_str!("../docs/memory.md")]
 
 /// Checked memory-operation failures.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
