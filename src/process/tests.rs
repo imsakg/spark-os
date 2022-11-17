@@ -1,6 +1,29 @@
 use super::*;
 
 #[test]
+fn pid_allocator_is_monotonic_and_never_wraps_to_zero() {
+    let mut ids = PidAllocator::new();
+    assert_eq!(ids.allocate().unwrap().get(), 1);
+    assert_eq!(ids.allocate().unwrap().get(), 2);
+    let mut edge = PidAllocator::starting_at(ProcessId::new(u64::MAX).unwrap());
+    assert_eq!(edge.allocate().unwrap().get(), u64::MAX);
+    assert_eq!(edge.allocate(), None);
+    assert_eq!(edge.allocate(), None);
+}
+
+#[test]
+fn failed_table_allocation_does_not_consume_an_identifier() {
+    let mut table = ProcessTable::<1>::new();
+    let first = table.spawn().unwrap();
+    assert_eq!(table.spawn(), Err(ProcessError::TableFull));
+    assert_eq!(table.ids.allocate().unwrap().get(), first.get() + 1);
+    table.slots[0] = None;
+    table.ids = PidAllocator { next: None };
+    assert_eq!(table.spawn(), Err(ProcessError::IdExhausted));
+    assert!(table.is_empty());
+}
+
+#[test]
 fn table_allocates_bounded_slots_and_checks_unknown_ids() {
     let mut table = ProcessTable::<2>::new();
     assert!(table.is_empty());

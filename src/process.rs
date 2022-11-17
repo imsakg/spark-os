@@ -54,6 +54,8 @@ pub enum ProcessError {
     TableFull,
     /// No live or retained process has this identifier.
     NotFound,
+    /// All nonzero identifiers have been issued; identifiers are never reused.
+    IdExhausted,
 }
 
 /// Allocation-free metadata for one process.
@@ -78,12 +80,16 @@ impl Process {
 /// Fixed-capacity table with checked identifier lookup.
 pub struct ProcessTable<const N: usize> {
     slots: [Option<Process>; N],
+    ids: PidAllocator,
 }
 
 impl<const N: usize> ProcessTable<N> {
     /// Construct an empty table.
     pub const fn new() -> Self {
-        Self { slots: [None; N] }
+        Self {
+            slots: [None; N],
+            ids: PidAllocator::new(),
+        }
     }
 
     /// Maximum number of retained processes.
@@ -108,7 +114,7 @@ impl<const N: usize> ProcessTable<N> {
             .iter()
             .position(Option::is_none)
             .ok_or(ProcessError::TableFull)?;
-        let id = ProcessId::new(index as u64 + 1).unwrap();
+        let id = self.ids.allocate().ok_or(ProcessError::IdExhausted)?;
         self.slots[index] = Some(Process {
             id,
             state: ProcessState::Ready,
@@ -127,6 +133,38 @@ impl<const N: usize> ProcessTable<N> {
 }
 
 impl<const N: usize> Default for ProcessTable<N> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Monotonic identifier source that stops rather than wrapping or recycling.
+pub struct PidAllocator {
+    next: Option<u64>,
+}
+
+impl PidAllocator {
+    /// Start allocating at identifier one.
+    pub const fn new() -> Self {
+        Self { next: Some(1) }
+    }
+
+    /// Start at an explicitly supplied nonzero identity, e.g. after a restore.
+    pub const fn starting_at(first: ProcessId) -> Self {
+        Self {
+            next: Some(first.get()),
+        }
+    }
+
+    /// Issue one unique identifier, or return `None` permanently after exhaustion.
+    pub fn allocate(&mut self) -> Option<ProcessId> {
+        let value = self.next?;
+        self.next = value.checked_add(1);
+        ProcessId::new(value)
+    }
+}
+
+impl Default for PidAllocator {
     fn default() -> Self {
         Self::new()
     }
