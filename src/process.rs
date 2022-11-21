@@ -36,6 +36,19 @@ pub enum ProcessState {
 }
 
 impl ProcessState {
+    /// Whether this lifecycle edge is allowed; self-transitions are errors.
+    pub const fn can_transition_to(self, next: Self) -> bool {
+        matches!(
+            (self, next),
+            (Self::Ready, Self::Running)
+                | (
+                    Self::Running,
+                    Self::Ready | Self::Blocked | Self::Sleeping | Self::Zombie
+                )
+                | (Self::Blocked | Self::Sleeping, Self::Ready)
+        )
+    }
+
     /// Whether the process can execute without a wakeup.
     pub const fn is_runnable(self) -> bool {
         matches!(self, Self::Ready | Self::Running)
@@ -56,6 +69,10 @@ pub enum ProcessError {
     NotFound,
     /// All nonzero identifiers have been issued; identifiers are never reused.
     IdExhausted,
+    /// The requested lifecycle edge is not legal.
+    InvalidTransition,
+    /// A different process is already running.
+    AlreadyRunning,
 }
 
 /// Allocation-free metadata for one process.
@@ -120,6 +137,30 @@ impl<const N: usize> ProcessTable<N> {
             state: ProcessState::Ready,
         });
         Ok(id)
+    }
+
+    /// Apply one legal lifecycle edge while preserving at most one running task.
+    pub fn transition(&mut self, id: ProcessId, next: ProcessState) -> Result<(), ProcessError> {
+        let previous = self.get(id)?.state;
+        if !previous.can_transition_to(next) {
+            return Err(ProcessError::InvalidTransition);
+        }
+        if next == ProcessState::Running
+            && self
+                .slots
+                .iter()
+                .flatten()
+                .any(|p| p.state == ProcessState::Running)
+        {
+            return Err(ProcessError::AlreadyRunning);
+        }
+        self.slots
+            .iter_mut()
+            .flatten()
+            .find(|p| p.id == id)
+            .unwrap()
+            .state = next;
+        Ok(())
     }
 
     /// Look up a process by identity, never by unchecked slot index.

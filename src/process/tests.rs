@@ -1,6 +1,66 @@
 use super::*;
 
 #[test]
+fn table_transitions_preserve_single_running_process() {
+    let mut table = ProcessTable::<2>::new();
+    let a = table.spawn().unwrap();
+    let b = table.spawn().unwrap();
+    table.transition(a, ProcessState::Running).unwrap();
+    assert_eq!(
+        table.transition(b, ProcessState::Running),
+        Err(ProcessError::AlreadyRunning)
+    );
+    assert_eq!(table.get(b).unwrap().state(), ProcessState::Ready);
+    table.transition(a, ProcessState::Blocked).unwrap();
+    table.transition(b, ProcessState::Running).unwrap();
+    table.transition(a, ProcessState::Ready).unwrap();
+    table.transition(b, ProcessState::Zombie).unwrap();
+    assert_eq!(
+        table.transition(b, ProcessState::Ready),
+        Err(ProcessError::InvalidTransition)
+    );
+    assert_eq!(
+        table.transition(a, ProcessState::Sleeping),
+        Err(ProcessError::InvalidTransition)
+    );
+    assert_eq!(
+        table.transition(a, ProcessState::Ready),
+        Err(ProcessError::InvalidTransition)
+    );
+    assert_eq!(
+        table.transition(ProcessId::new(77).unwrap(), ProcessState::Ready),
+        Err(ProcessError::NotFound)
+    );
+}
+
+#[test]
+fn lifecycle_transition_matrix_is_explicit() {
+    use ProcessState::*;
+    let states = [Ready, Running, Blocked, Sleeping, Zombie];
+    for from in states {
+        for to in states {
+            let expected = matches!(
+                (from, to),
+                (Ready, Running)
+                    | (Running, Ready)
+                    | (Running, Blocked)
+                    | (Running, Sleeping)
+                    | (Running, Zombie)
+                    | (Blocked, Ready)
+                    | (Sleeping, Ready)
+            );
+            assert_eq!(
+                from.can_transition_to(to),
+                expected,
+                "{:?} -> {:?}",
+                from,
+                to
+            );
+        }
+    }
+}
+
+#[test]
 fn pid_allocator_is_monotonic_and_never_wraps_to_zero() {
     let mut ids = PidAllocator::new();
     assert_eq!(ids.allocate().unwrap().get(), 1);
