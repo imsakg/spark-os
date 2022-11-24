@@ -1,6 +1,29 @@
 use super::*;
 
 #[test]
+fn run_queue_is_fifo_duplicate_free_and_wraps_without_losing_entries() {
+    let [a, b, c, d] = [1, 2, 3, 4].map(|n| ProcessId::new(n).unwrap());
+    let mut queue = RunQueue::<3>::new();
+    assert_eq!(queue.pop(), None);
+    queue.enqueue(a).unwrap();
+    queue.enqueue(b).unwrap();
+    queue.enqueue(c).unwrap();
+    assert_eq!(queue.enqueue(a), Err(QueueError::Duplicate));
+    assert_eq!(queue.enqueue(d), Err(QueueError::Full));
+    assert_eq!(queue.pop(), Some(a));
+    queue.enqueue(d).unwrap();
+    assert!(queue.remove(c));
+    assert!(!queue.remove(a));
+    assert_eq!(queue.iter().collect::<std::vec::Vec<_>>(), [b, d]);
+    assert_eq!(queue.pop(), Some(b));
+    assert_eq!(queue.pop(), Some(d));
+    assert!(queue.is_empty());
+    assert_eq!(queue.len(), 0);
+    assert_eq!(RunQueue::<0>::new().enqueue(a), Err(QueueError::Full));
+    assert!(!RunQueue::<0>::new().remove(a));
+}
+
+#[test]
 fn table_transitions_preserve_single_running_process() {
     let mut table = ProcessTable::<2>::new();
     let a = table.spawn().unwrap();
