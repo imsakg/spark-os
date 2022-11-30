@@ -1,7 +1,9 @@
 //! Process lifecycle and cooperative scheduling.
 
 mod queue;
+mod scheduler;
 pub use queue::{QueueError, RunQueue};
+pub use scheduler::Scheduler;
 
 /// A nonzero process identifier. Zero is reserved for non-process kernel work.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]

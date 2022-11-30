@@ -1,6 +1,32 @@
 use super::*;
 
 #[test]
+fn scheduler_admits_and_rotates_in_round_robin_order() {
+    let mut scheduler = Scheduler::<3>::new();
+    assert_eq!(scheduler.dispatch(), None);
+    let a = scheduler.spawn().unwrap();
+    let b = scheduler.spawn().unwrap();
+    let c = scheduler.spawn().unwrap();
+    assert_eq!(scheduler.spawn(), Err(ProcessError::TableFull));
+    assert_eq!(scheduler.ready_len(), 3);
+    assert_eq!(scheduler.dispatch(), Some(a));
+    assert_eq!(scheduler.dispatch(), Some(a));
+    assert_eq!(scheduler.current(), Some(a));
+    assert_eq!(
+        scheduler.processes().get(a).unwrap().state(),
+        ProcessState::Running
+    );
+    for expected in [b, c, a, b, c, a] {
+        assert_eq!(scheduler.reschedule(), Some(expected));
+        assert_eq!(scheduler.ready_len(), 2);
+    }
+    let mut one = Scheduler::<1>::new();
+    let id = one.spawn().unwrap();
+    assert_eq!(one.reschedule(), Some(id));
+    assert_eq!(one.reschedule(), Some(id));
+}
+
+#[test]
 fn run_queue_is_fifo_duplicate_free_and_wraps_without_losing_entries() {
     let [a, b, c, d] = [1, 2, 3, 4].map(|n| ProcessId::new(n).unwrap());
     let mut queue = RunQueue::<3>::new();
