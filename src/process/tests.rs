@@ -1,6 +1,28 @@
 use super::*;
 
 #[test]
+fn quantum_ticks_request_rescheduling_without_claiming_preemption() {
+    assert!(matches!(
+        Scheduler::<1>::with_quantum(0),
+        Err(ProcessError::InvalidQuantum)
+    ));
+    let mut scheduler = Scheduler::<2>::with_quantum(2).unwrap();
+    assert_eq!(scheduler.tick(), Ok(TickOutcome::Idle));
+    let a = scheduler.spawn().unwrap();
+    let b = scheduler.spawn().unwrap();
+    scheduler.dispatch();
+    assert_eq!(scheduler.remaining_quantum(), 2);
+    assert_eq!(scheduler.tick(), Ok(TickOutcome::Continue(a)));
+    assert_eq!(scheduler.remaining_quantum(), 1);
+    assert_eq!(scheduler.tick(), Ok(TickOutcome::QuantumExpired(a)));
+    assert_eq!(scheduler.tick(), Ok(TickOutcome::QuantumExpired(a)));
+    assert_eq!(scheduler.current(), Some(a));
+    assert_eq!(scheduler.reschedule(), Some(b));
+    assert_eq!(scheduler.remaining_quantum(), 2);
+    assert_eq!(scheduler.tick(), Ok(TickOutcome::Continue(b)));
+}
+
+#[test]
 fn scheduler_admits_and_rotates_in_round_robin_order() {
     let mut scheduler = Scheduler::<3>::new();
     assert_eq!(scheduler.dispatch(), None);

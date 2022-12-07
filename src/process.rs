@@ -3,7 +3,7 @@
 mod queue;
 mod scheduler;
 pub use queue::{QueueError, RunQueue};
-pub use scheduler::Scheduler;
+pub use scheduler::{Scheduler, TickOutcome};
 
 /// A nonzero process identifier. Zero is reserved for non-process kernel work.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -78,6 +78,8 @@ pub enum ProcessError {
     InvalidTransition,
     /// A different process is already running.
     AlreadyRunning,
+    /// A time slice must contain at least one tick.
+    InvalidQuantum,
 }
 
 /// Allocation-free metadata for one process.

@@ -2,11 +2,24 @@
 
 use super::{ProcessError, ProcessId, ProcessState, ProcessTable, RunQueue};
 
+/// A tick reports policy only; it never switches CPU context.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TickOutcome {
+    /// No process was running during this tick.
+    Idle,
+    /// The running process still has budget.
+    Continue(ProcessId),
+    /// The caller should arrange a safe scheduling point.
+    QuantumExpired(ProcessId),
+}
+
 /// Allocation-free cooperative scheduler. Mutate only through an exclusive owner.
 pub struct Scheduler<const N: usize> {
     table: ProcessTable<N>,
     ready: RunQueue<N>,
     current: Option<ProcessId>,
+    quantum: u32,
+    remaining: u32,
 }
 
 impl<const N: usize> Scheduler<N> {
@@ -16,6 +29,38 @@ impl<const N: usize> Scheduler<N> {
             table: ProcessTable::new(),
             ready: RunQueue::new(),
             current: None,
+            quantum: 4,
+            remaining: 0,
+        }
+    }
+
+    /// Construct a scheduler with a checked, nonzero tick budget.
+    pub fn with_quantum(quantum: u32) -> Result<Self, ProcessError> {
+        if quantum == 0 {
+            return Err(ProcessError::InvalidQuantum);
+        }
+        let mut scheduler = Self::new();
+        scheduler.quantum = quantum;
+        Ok(scheduler)
+    }
+
+    /// Remaining ticks in the current process's slice, or zero while idle.
+    pub const fn remaining_quantum(&self) -> u32 {
+        self.remaining
+    }
+
+    /// Consume one tick without automatically changing the running process.
+    pub fn tick(&mut self) -> Result<TickOutcome, ProcessError> {
+        match self.current {
+            None => Ok(TickOutcome::Idle),
+            Some(id) => {
+                self.remaining = self.remaining.saturating_sub(1);
+                if self.remaining == 0 {
+                    Ok(TickOutcome::QuantumExpired(id))
+                } else {
+                    Ok(TickOutcome::Continue(id))
+                }
+            }
         }
     }
 
@@ -48,6 +93,7 @@ impl<const N: usize> Scheduler<N> {
             if let Some(id) = self.ready.pop() {
                 self.table.transition(id, ProcessState::Running).unwrap();
                 self.current = Some(id);
+                self.remaining = self.quantum;
             }
         }
         self.current
