@@ -80,6 +80,8 @@ pub enum ProcessError {
     AlreadyRunning,
     /// A time slice must contain at least one tick.
     InvalidQuantum,
+    /// The operation requires a running process, but the scheduler is idle.
+    NoCurrent,
 }
 
 /// Allocation-free metadata for one process.

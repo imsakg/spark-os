@@ -99,11 +99,27 @@ impl<const N: usize> Scheduler<N> {
         self.current
     }
 
+    fn stop_current(&mut self, next: ProcessState) -> Result<ProcessId, ProcessError> {
+        let id = self.current.ok_or(ProcessError::NoCurrent)?;
+        self.table.transition(id, next)?;
+        self.current = None;
+        self.remaining = 0;
+        Ok(id)
+    }
+
+    /// Voluntarily donate the unused slice and rejoin at the ready queue tail.
+    /// Unlike `reschedule`, yielding while idle is an error with no side effects.
+    pub fn yield_current(&mut self) -> Result<Option<ProcessId>, ProcessError> {
+        let id = self.stop_current(ProcessState::Ready)?;
+        self.ready.enqueue(id).unwrap();
+        Ok(self.dispatch())
+    }
+
     /// Rotate the running task to the queue tail and dispatch the oldest ready.
     /// This changes metadata only; the caller must implement hardware switching.
     pub fn reschedule(&mut self) -> Option<ProcessId> {
-        if let Some(id) = self.current.take() {
-            self.table.transition(id, ProcessState::Ready).unwrap();
+        if self.current.is_some() {
+            let id = self.stop_current(ProcessState::Ready).unwrap();
             self.ready.enqueue(id).unwrap();
         }
         self.dispatch()

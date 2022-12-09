@@ -1,6 +1,31 @@
 use super::*;
 
 #[test]
+fn voluntary_yield_donates_slice_and_preserves_fifo_fairness() {
+    let mut scheduler = Scheduler::<2>::with_quantum(5).unwrap();
+    assert_eq!(scheduler.yield_current(), Err(ProcessError::NoCurrent));
+    let a = scheduler.spawn().unwrap();
+    let b = scheduler.spawn().unwrap();
+    scheduler.dispatch();
+    scheduler.tick().unwrap();
+    assert_eq!(scheduler.remaining_quantum(), 4);
+    assert_eq!(scheduler.yield_current(), Ok(Some(b)));
+    assert_eq!(scheduler.remaining_quantum(), 5);
+    assert_eq!(
+        scheduler.processes().get(a).unwrap().state(),
+        ProcessState::Ready
+    );
+    assert_eq!(scheduler.yield_current(), Ok(Some(a)));
+    let mut one = Scheduler::<1>::with_quantum(3).unwrap();
+    let id = one.spawn().unwrap();
+    one.dispatch();
+    one.tick().unwrap();
+    assert_eq!(one.yield_current(), Ok(Some(id)));
+    assert_eq!(one.remaining_quantum(), 3);
+    assert_eq!(one.ready_len(), 0);
+}
+
+#[test]
 fn quantum_ticks_request_rescheduling_without_claiming_preemption() {
     assert!(matches!(
         Scheduler::<1>::with_quantum(0),
