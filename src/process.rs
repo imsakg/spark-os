@@ -84,14 +84,36 @@ pub enum ProcessError {
     NoCurrent,
 }
 
+/// Typed event identity. Event delivery and condition checks belong to the caller.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct WaitChannel(u64);
+
+impl WaitChannel {
+    /// Construct an event channel; zero is a valid event identity.
+    pub const fn new(value: u64) -> Self {
+        Self(value)
+    }
+
+    /// Return the numeric event identity.
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+}
+
 /// Allocation-free metadata for one process.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Process {
     id: ProcessId,
     state: ProcessState,
+    wait: Option<WaitChannel>,
 }
 
 impl Process {
+    /// Event channel while blocked, if any.
+    pub const fn wait_channel(&self) -> Option<WaitChannel> {
+        self.wait
+    }
+
     /// Return the process identity.
     pub const fn id(&self) -> ProcessId {
         self.id
@@ -144,6 +166,7 @@ impl<const N: usize> ProcessTable<N> {
         self.slots[index] = Some(Process {
             id,
             state: ProcessState::Ready,
+            wait: None,
         });
         Ok(id)
     }
@@ -170,6 +193,14 @@ impl<const N: usize> ProcessTable<N> {
             .unwrap()
             .state = next;
         Ok(())
+    }
+
+    fn get_mut(&mut self, id: ProcessId) -> Result<&mut Process, ProcessError> {
+        self.slots
+            .iter_mut()
+            .flatten()
+            .find(|p| p.id == id)
+            .ok_or(ProcessError::NotFound)
     }
 
     /// Look up a process by identity, never by unchecked slot index.

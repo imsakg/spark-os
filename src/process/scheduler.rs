@@ -1,6 +1,6 @@
 //! Exclusive-owner single-core scheduling decisions, not hardware switching.
 
-use super::{ProcessError, ProcessId, ProcessState, ProcessTable, RunQueue};
+use super::{ProcessError, ProcessId, ProcessState, ProcessTable, RunQueue, WaitChannel};
 
 /// A tick reports policy only; it never switches CPU context.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -97,6 +97,17 @@ impl<const N: usize> Scheduler<N> {
             }
         }
         self.current
+    }
+
+    /// Block on an event and immediately select another ready process if possible.
+    /// The caller must atomically coordinate condition checks and event delivery.
+    pub fn block_current(
+        &mut self,
+        channel: WaitChannel,
+    ) -> Result<Option<ProcessId>, ProcessError> {
+        let id = self.stop_current(ProcessState::Blocked)?;
+        self.table.get_mut(id).unwrap().wait = Some(channel);
+        Ok(self.dispatch())
     }
 
     fn stop_current(&mut self, next: ProcessState) -> Result<ProcessId, ProcessError> {

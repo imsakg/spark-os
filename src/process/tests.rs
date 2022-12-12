@@ -1,6 +1,29 @@
 use super::*;
 
 #[test]
+fn blocking_removes_current_until_an_explicit_wakeup() {
+    let mut scheduler = Scheduler::<2>::new();
+    let channel = WaitChannel::new(12);
+    assert_eq!(channel.get(), 12);
+    assert_eq!(
+        scheduler.block_current(channel),
+        Err(ProcessError::NoCurrent)
+    );
+    let a = scheduler.spawn().unwrap();
+    let b = scheduler.spawn().unwrap();
+    scheduler.dispatch();
+    assert_eq!(scheduler.block_current(channel), Ok(Some(b)));
+    let blocked = scheduler.processes().get(a).unwrap();
+    assert_eq!(blocked.state(), ProcessState::Blocked);
+    assert_eq!(blocked.wait_channel(), Some(channel));
+    assert_eq!(scheduler.block_current(channel), Ok(None));
+    assert_eq!(scheduler.remaining_quantum(), 0);
+    assert_eq!(scheduler.reschedule(), None);
+    assert_eq!(scheduler.ready_len(), 0);
+    assert_eq!(scheduler.processes().len(), 2);
+}
+
+#[test]
 fn voluntary_yield_donates_slice_and_preserves_fifo_fairness() {
     let mut scheduler = Scheduler::<2>::with_quantum(5).unwrap();
     assert_eq!(scheduler.yield_current(), Err(ProcessError::NoCurrent));
