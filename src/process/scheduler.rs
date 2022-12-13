@@ -110,6 +110,40 @@ impl<const N: usize> Scheduler<N> {
         Ok(self.dispatch())
     }
 
+    /// Make one event-blocked process ready without implicitly dispatching it.
+    pub fn wake(&mut self, id: ProcessId) -> Result<(), ProcessError> {
+        if self.table.get(id)?.state() != ProcessState::Blocked {
+            return Err(ProcessError::InvalidTransition);
+        }
+        self.table.transition(id, ProcessState::Ready)?;
+        self.table.get_mut(id).unwrap().wait = None;
+        self.ready.enqueue(id).unwrap();
+        Ok(())
+    }
+
+    /// Wake the lowest-identity waiter matching this channel, if any.
+    pub fn wake_one(&mut self, channel: WaitChannel) -> Option<ProcessId> {
+        let id = self
+            .table
+            .slots
+            .iter()
+            .flatten()
+            .filter(|p| p.state == ProcessState::Blocked && p.wait == Some(channel))
+            .map(|p| p.id)
+            .min()?;
+        self.wake(id).unwrap();
+        Some(id)
+    }
+
+    /// Wake every matching waiter in ascending identity order; return the count.
+    pub fn wake_all(&mut self, channel: WaitChannel) -> usize {
+        let mut count = 0;
+        while self.wake_one(channel).is_some() {
+            count += 1;
+        }
+        count
+    }
+
     fn stop_current(&mut self, next: ProcessState) -> Result<ProcessId, ProcessError> {
         let id = self.current.ok_or(ProcessError::NoCurrent)?;
         self.table.transition(id, next)?;

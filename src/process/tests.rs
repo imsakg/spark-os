@@ -1,6 +1,37 @@
 use super::*;
 
 #[test]
+fn wakeups_match_channels_and_never_duplicate_ready_admissions() {
+    let mut scheduler = Scheduler::<3>::new();
+    let [a, b, c] = [
+        scheduler.spawn().unwrap(),
+        scheduler.spawn().unwrap(),
+        scheduler.spawn().unwrap(),
+    ];
+    let event = WaitChannel::new(1);
+    let other = WaitChannel::new(2);
+    scheduler.dispatch();
+    scheduler.block_current(event).unwrap();
+    scheduler.block_current(other).unwrap();
+    scheduler.block_current(event).unwrap();
+    assert_eq!(scheduler.wake_one(event), Some(a));
+    assert_eq!(scheduler.wake(a), Err(ProcessError::InvalidTransition));
+    assert_eq!(scheduler.processes().get(a).unwrap().wait_channel(), None);
+    assert_eq!(scheduler.wake_all(event), 1);
+    assert_eq!(scheduler.wake_all(event), 0);
+    assert_eq!(scheduler.wake_one(other), Some(b));
+    assert_eq!(scheduler.ready_len(), 3);
+    assert_eq!(scheduler.current(), None);
+    assert_eq!(scheduler.dispatch(), Some(a));
+    assert_eq!(scheduler.reschedule(), Some(c));
+    assert_eq!(scheduler.reschedule(), Some(b));
+    assert_eq!(
+        scheduler.wake(ProcessId::new(99).unwrap()),
+        Err(ProcessError::NotFound)
+    );
+}
+
+#[test]
 fn blocking_removes_current_until_an_explicit_wakeup() {
     let mut scheduler = Scheduler::<2>::new();
     let channel = WaitChannel::new(12);
