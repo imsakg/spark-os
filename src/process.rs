@@ -82,6 +82,10 @@ pub enum ProcessError {
     InvalidQuantum,
     /// The operation requires a running process, but the scheduler is idle.
     NoCurrent,
+    /// A requested sleep deadline is not strictly in the future.
+    InvalidDeadline,
+    /// Monotonic time or a relative deadline would overflow.
+    ClockOverflow,
 }
 
 /// Typed event identity. Event delivery and condition checks belong to the caller.
@@ -106,9 +110,15 @@ pub struct Process {
     id: ProcessId,
     state: ProcessState,
     wait: Option<WaitChannel>,
+    deadline: Option<u64>,
 }
 
 impl Process {
+    /// Absolute monotonic wake tick while sleeping, if any.
+    pub const fn wake_deadline(&self) -> Option<u64> {
+        self.deadline
+    }
+
     /// Event channel while blocked, if any.
     pub const fn wait_channel(&self) -> Option<WaitChannel> {
         self.wait
@@ -167,6 +177,7 @@ impl<const N: usize> ProcessTable<N> {
             id,
             state: ProcessState::Ready,
             wait: None,
+            deadline: None,
         });
         Ok(id)
     }

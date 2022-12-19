@@ -20,6 +20,7 @@ pub struct Scheduler<const N: usize> {
     current: Option<ProcessId>,
     quantum: u32,
     remaining: u32,
+    now: u64,
 }
 
 impl<const N: usize> Scheduler<N> {
@@ -31,6 +32,7 @@ impl<const N: usize> Scheduler<N> {
             current: None,
             quantum: 4,
             remaining: 0,
+            now: 0,
         }
     }
 
@@ -44,6 +46,61 @@ impl<const N: usize> Scheduler<N> {
         Ok(scheduler)
     }
 
+    /// Construct with an explicit monotonic epoch and nonzero slice length.
+    pub fn with_clock(quantum: u32, now: u64) -> Result<Self, ProcessError> {
+        let mut scheduler = Self::with_quantum(quantum)?;
+        scheduler.now = now;
+        Ok(scheduler)
+    }
+
+    /// Current monotonic tick. This is not wall-clock time.
+    pub const fn now(&self) -> u64 {
+        self.now
+    }
+
+    /// Sleep the running process for a positive, checked number of ticks.
+    pub fn sleep_for(&mut self, ticks: u64) -> Result<Option<ProcessId>, ProcessError> {
+        self.current.ok_or(ProcessError::NoCurrent)?;
+        let deadline = self
+            .now
+            .checked_add(ticks)
+            .ok_or(ProcessError::ClockOverflow)?;
+        self.sleep_until(deadline)
+    }
+
+    /// Sleep until a strictly future deadline and dispatch another ready task.
+    pub fn sleep_until(&mut self, deadline: u64) -> Result<Option<ProcessId>, ProcessError> {
+        self.current.ok_or(ProcessError::NoCurrent)?;
+        if deadline <= self.now {
+            return Err(ProcessError::InvalidDeadline);
+        }
+        let id = self.stop_current(ProcessState::Sleeping)?;
+        self.table.get_mut(id).unwrap().deadline = Some(deadline);
+        Ok(self.dispatch())
+    }
+
+    fn wake_sleepers(&mut self) {
+        loop {
+            let next = self
+                .table
+                .slots
+                .iter()
+                .flatten()
+                .filter(|p| {
+                    p.state == ProcessState::Sleeping && p.deadline.map_or(false, |d| d <= self.now)
+                })
+                .min_by_key(|p| (p.deadline, p.id))
+                .map(|p| p.id);
+            let id = match next {
+                Some(id) => id,
+                None => break,
+            };
+            self.table.transition(id, ProcessState::Ready).unwrap();
+            self.table.get_mut(id).unwrap().deadline = None;
+            self.ready.enqueue(id).unwrap();
+        }
+    }
+
     /// Remaining ticks in the current process's slice, or zero while idle.
     pub const fn remaining_quantum(&self) -> u32 {
         self.remaining
@@ -51,6 +108,8 @@ impl<const N: usize> Scheduler<N> {
 
     /// Consume one tick without automatically changing the running process.
     pub fn tick(&mut self) -> Result<TickOutcome, ProcessError> {
+        self.now = self.now.checked_add(1).ok_or(ProcessError::ClockOverflow)?;
+        self.wake_sleepers();
         match self.current {
             None => Ok(TickOutcome::Idle),
             Some(id) => {

@@ -1,6 +1,47 @@
 use super::*;
 
 #[test]
+fn sleepers_wake_at_exact_deadlines_in_stable_order() {
+    let mut scheduler = Scheduler::<2>::new();
+    let a = scheduler.spawn().unwrap();
+    let b = scheduler.spawn().unwrap();
+    scheduler.dispatch();
+    assert_eq!(scheduler.sleep_for(0), Err(ProcessError::InvalidDeadline));
+    assert_eq!(scheduler.current(), Some(a));
+    assert_eq!(scheduler.sleep_until(2), Ok(Some(b)));
+    assert_eq!(
+        scheduler.processes().get(a).unwrap().wake_deadline(),
+        Some(2)
+    );
+    assert_eq!(scheduler.wake(a), Err(ProcessError::InvalidTransition));
+    assert_eq!(scheduler.sleep_for(2), Ok(None));
+    assert_eq!(scheduler.tick(), Ok(TickOutcome::Idle));
+    assert_eq!(scheduler.now(), 1);
+    assert_eq!(scheduler.ready_len(), 0);
+    assert_eq!(scheduler.tick(), Ok(TickOutcome::Idle));
+    assert_eq!(scheduler.ready_len(), 2);
+    assert_eq!(scheduler.processes().get(a).unwrap().wake_deadline(), None);
+    assert_eq!(scheduler.dispatch(), Some(a));
+    assert_eq!(scheduler.reschedule(), Some(b));
+}
+
+#[test]
+fn clock_and_deadline_overflow_are_atomic_errors() {
+    let mut scheduler = Scheduler::<1>::with_clock(2, u64::MAX).unwrap();
+    let id = scheduler.spawn().unwrap();
+    scheduler.dispatch();
+    assert_eq!(scheduler.tick(), Err(ProcessError::ClockOverflow));
+    assert_eq!(scheduler.sleep_for(1), Err(ProcessError::ClockOverflow));
+    assert_eq!(scheduler.remaining_quantum(), 2);
+    assert_eq!(scheduler.current(), Some(id));
+    assert_eq!(scheduler.now(), u64::MAX);
+    assert_eq!(
+        scheduler.sleep_until(u64::MAX),
+        Err(ProcessError::InvalidDeadline)
+    );
+}
+
+#[test]
 fn wakeups_match_channels_and_never_duplicate_ready_admissions() {
     let mut scheduler = Scheduler::<3>::new();
     let [a, b, c] = [
