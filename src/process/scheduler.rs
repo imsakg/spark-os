@@ -203,6 +203,16 @@ impl<const N: usize> Scheduler<N> {
         count
     }
 
+    /// End the current process, retaining its slot and status until explicit reap.
+    pub fn exit_current(&mut self, code: i32) -> Result<Option<ProcessId>, ProcessError> {
+        let id = self.stop_current(ProcessState::Zombie)?;
+        let process = self.table.get_mut(id).unwrap();
+        process.exit_code = Some(code);
+        process.wait = None;
+        process.deadline = None;
+        Ok(self.dispatch())
+    }
+
     fn stop_current(&mut self, next: ProcessState) -> Result<ProcessId, ProcessError> {
         let id = self.current.ok_or(ProcessError::NoCurrent)?;
         self.table.transition(id, next)?;

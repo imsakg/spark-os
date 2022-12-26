@@ -1,6 +1,33 @@
 use super::*;
 
 #[test]
+fn exit_retains_zombie_status_and_never_redispatches_the_dead() {
+    let mut scheduler = Scheduler::<2>::new();
+    assert_eq!(scheduler.exit_current(0), Err(ProcessError::NoCurrent));
+    let a = scheduler.spawn().unwrap();
+    let b = scheduler.spawn().unwrap();
+    scheduler.dispatch();
+    assert_eq!(scheduler.processes().get(a).unwrap().exit_code(), None);
+    assert_eq!(scheduler.exit_current(-17), Ok(Some(b)));
+    assert_eq!(scheduler.processes().get(a).unwrap().exit_code(), Some(-17));
+    assert_eq!(
+        scheduler.processes().get(a).unwrap().state(),
+        ProcessState::Zombie
+    );
+    assert_eq!(scheduler.wake(a), Err(ProcessError::InvalidTransition));
+    assert_eq!(scheduler.spawn(), Err(ProcessError::TableFull));
+    assert_eq!(scheduler.exit_current(i32::MIN), Ok(None));
+    assert_eq!(
+        scheduler.processes().get(b).unwrap().exit_code(),
+        Some(i32::MIN)
+    );
+    assert_eq!(scheduler.reschedule(), None);
+    assert_eq!(scheduler.ready_len(), 0);
+    assert_eq!(scheduler.remaining_quantum(), 0);
+    assert_eq!(scheduler.processes().len(), 2);
+}
+
+#[test]
 fn sleepers_wake_at_exact_deadlines_in_stable_order() {
     let mut scheduler = Scheduler::<2>::new();
     let a = scheduler.spawn().unwrap();

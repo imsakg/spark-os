@@ -111,9 +111,15 @@ pub struct Process {
     state: ProcessState,
     wait: Option<WaitChannel>,
     deadline: Option<u64>,
+    exit_code: Option<i32>,
 }
 
 impl Process {
+    /// Retained termination status; `None` means the process has not exited.
+    pub const fn exit_code(&self) -> Option<i32> {
+        self.exit_code
+    }
+
     /// Absolute monotonic wake tick while sleeping, if any.
     pub const fn wake_deadline(&self) -> Option<u64> {
         self.deadline
@@ -178,6 +184,7 @@ impl<const N: usize> ProcessTable<N> {
             state: ProcessState::Ready,
             wait: None,
             deadline: None,
+            exit_code: None,
         });
         Ok(id)
     }
