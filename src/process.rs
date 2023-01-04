@@ -86,6 +86,8 @@ pub enum ProcessError {
     InvalidDeadline,
     /// Monotonic time or a relative deadline would overflow.
     ClockOverflow,
+    /// Only exited, retained zombie processes may be reaped.
+    NotZombie,
 }
 
 /// Typed event identity. Event delivery and condition checks belong to the caller.

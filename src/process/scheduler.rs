@@ -1,6 +1,6 @@
 //! Exclusive-owner single-core scheduling decisions, not hardware switching.
 
-use super::{ProcessError, ProcessId, ProcessState, ProcessTable, RunQueue, WaitChannel};
+use super::{Process, ProcessError, ProcessId, ProcessState, ProcessTable, RunQueue, WaitChannel};
 
 /// A tick reports policy only; it never switches CPU context.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -211,6 +211,21 @@ impl<const N: usize> Scheduler<N> {
         process.wait = None;
         process.deadline = None;
         Ok(self.dispatch())
+    }
+
+    /// Collect an exited process's complete metadata and release only its slot.
+    /// Process identities remain permanently retired, preventing stale-PID aliasing.
+    pub fn reap(&mut self, id: ProcessId) -> Result<Process, ProcessError> {
+        if self.table.get(id)?.state() != ProcessState::Zombie {
+            return Err(ProcessError::NotZombie);
+        }
+        let slot = self
+            .table
+            .slots
+            .iter_mut()
+            .find(|slot| slot.map_or(false, |p| p.id == id))
+            .unwrap();
+        Ok(slot.take().unwrap())
     }
 
     fn stop_current(&mut self, next: ProcessState) -> Result<ProcessId, ProcessError> {

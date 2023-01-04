@@ -1,6 +1,27 @@
 use super::*;
 
 #[test]
+fn reaping_recycles_slots_but_never_old_identities() {
+    let mut scheduler = Scheduler::<1>::new();
+    let mut last = 0;
+    for code in 0..128 {
+        let id = scheduler.spawn().unwrap();
+        assert!(id.get() > last);
+        assert_eq!(scheduler.reap(id), Err(ProcessError::NotZombie));
+        scheduler.dispatch();
+        assert_eq!(scheduler.reap(id), Err(ProcessError::NotZombie));
+        scheduler.exit_current(code).unwrap();
+        let reaped = scheduler.reap(id).unwrap();
+        assert_eq!(reaped.id(), id);
+        assert_eq!(reaped.exit_code(), Some(code));
+        assert!(scheduler.processes().is_empty());
+        assert_eq!(scheduler.reap(id), Err(ProcessError::NotFound));
+        assert_eq!(scheduler.wake(id), Err(ProcessError::NotFound));
+        last = id.get();
+    }
+}
+
+#[test]
 fn exit_retains_zombie_status_and_never_redispatches_the_dead() {
     let mut scheduler = Scheduler::<2>::new();
     assert_eq!(scheduler.exit_current(0), Err(ProcessError::NoCurrent));
