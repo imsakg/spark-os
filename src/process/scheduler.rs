@@ -1,6 +1,9 @@
 //! Exclusive-owner single-core scheduling decisions, not hardware switching.
 
-use super::{Process, ProcessError, ProcessId, ProcessState, ProcessTable, RunQueue, WaitChannel};
+use super::{
+    Priority, Process, ProcessError, ProcessId, ProcessState, ProcessTable, RunQueue,
+    SchedulingPolicy, WaitChannel,
+};
 
 /// A tick reports policy only; it never switches CPU context.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -21,6 +24,7 @@ pub struct Scheduler<const N: usize> {
     quantum: u32,
     remaining: u32,
     now: u64,
+    policy: SchedulingPolicy,
 }
 
 impl<const N: usize> Scheduler<N> {
@@ -33,6 +37,7 @@ impl<const N: usize> Scheduler<N> {
             quantum: 4,
             remaining: 0,
             now: 0,
+            policy: SchedulingPolicy::RoundRobin,
         }
     }
 
@@ -131,6 +136,52 @@ impl<const N: usize> Scheduler<N> {
         Ok(id)
     }
 
+    /// Admit a ready task with an explicit checked priority.
+    pub fn spawn_with_priority(&mut self, priority: Priority) -> Result<ProcessId, ProcessError> {
+        let id = self.spawn()?;
+        self.table.get_mut(id).unwrap().priority = priority;
+        Ok(id)
+    }
+
+    /// Select future dispatch policy and reset accumulated aging credits.
+    /// This does not interrupt the running task or reorder FIFO admission ties.
+    pub fn set_policy(&mut self, policy: SchedulingPolicy) {
+        self.policy = policy;
+        for process in self.table.slots.iter_mut().flatten() {
+            process.missed_dispatches = 0;
+        }
+    }
+
+    /// Change a nonterminal task's priority without preempting the current task.
+    pub fn set_priority(&mut self, id: ProcessId, priority: Priority) -> Result<(), ProcessError> {
+        let process = self.table.get_mut(id)?;
+        if process.state.is_terminal() {
+            return Err(ProcessError::InvalidTransition);
+        }
+        process.priority = priority;
+        Ok(())
+    }
+
+    fn select_next(&mut self) -> Option<ProcessId> {
+        let id = match self.policy {
+            SchedulingPolicy::RoundRobin => self.ready.pop()?,
+            SchedulingPolicy::PriorityAging => {
+                let best = self.ready.iter().min_by_key(|id| {
+                    let process = self.table.get(*id).unwrap();
+                    process.priority.aged(process.missed_dispatches)
+                })?;
+                self.ready.remove(best);
+                best
+            }
+        };
+        for waiting in self.ready.iter() {
+            let process = self.table.get_mut(waiting).unwrap();
+            process.missed_dispatches = process.missed_dispatches.saturating_add(1);
+        }
+        self.table.get_mut(id).unwrap().missed_dispatches = 0;
+        Some(id)
+    }
+
     /// Read-only access to retained process metadata.
     pub const fn processes(&self) -> &ProcessTable<N> {
         &self.table
@@ -149,7 +200,7 @@ impl<const N: usize> Scheduler<N> {
     /// Select the oldest ready process only when no process is running.
     pub fn dispatch(&mut self) -> Option<ProcessId> {
         if self.current.is_none() {
-            if let Some(id) = self.ready.pop() {
+            if let Some(id) = self.select_next() {
                 self.table.transition(id, ProcessState::Running).unwrap();
                 self.current = Some(id);
                 self.remaining = self.quantum;

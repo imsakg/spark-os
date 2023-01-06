@@ -1,6 +1,8 @@
 //! Process lifecycle and cooperative scheduling.
 
+mod policy;
 mod queue;
+pub use policy::{Priority, SchedulingPolicy, AGING_INTERVAL};
 mod scheduler;
 pub use queue::{QueueError, RunQueue};
 pub use scheduler::{Scheduler, TickOutcome};
@@ -114,9 +116,16 @@ pub struct Process {
     wait: Option<WaitChannel>,
     deadline: Option<u64>,
     exit_code: Option<i32>,
+    priority: Priority,
+    missed_dispatches: u8,
 }
 
 impl Process {
+    /// Configured base priority, before dispatch aging.
+    pub const fn priority(&self) -> Priority {
+        self.priority
+    }
+
     /// Retained termination status; `None` means the process has not exited.
     pub const fn exit_code(&self) -> Option<i32> {
         self.exit_code
@@ -187,6 +196,8 @@ impl<const N: usize> ProcessTable<N> {
             wait: None,
             deadline: None,
             exit_code: None,
+            priority: Priority::NORMAL,
+            missed_dispatches: 0,
         });
         Ok(id)
     }

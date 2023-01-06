@@ -1,6 +1,55 @@
 use super::*;
 
 #[test]
+fn priority_policy_prefers_urgent_tasks_but_ages_low_priority_waiters() {
+    assert_eq!(Priority::new(8), None);
+    let high = Priority::new(0).unwrap();
+    let low = Priority::new(7).unwrap();
+    let mut scheduler = Scheduler::<3>::new();
+    scheduler.set_policy(SchedulingPolicy::PriorityAging);
+    let a = scheduler.spawn_with_priority(low).unwrap();
+    let b = scheduler.spawn_with_priority(high).unwrap();
+    let c = scheduler.spawn_with_priority(high).unwrap();
+    assert_eq!(scheduler.processes().get(a).unwrap().priority(), low);
+    assert_eq!(scheduler.dispatch(), Some(b));
+    assert_eq!(scheduler.reschedule(), Some(c));
+    let mut observed = false;
+    for _ in 0..20 {
+        if scheduler.reschedule() == Some(a) {
+            observed = true;
+            break;
+        }
+    }
+    assert!(
+        observed,
+        "low-priority task must receive service despite urgent peers"
+    );
+    scheduler.set_priority(a, high).unwrap();
+    assert_eq!(scheduler.current(), Some(a));
+    assert_eq!(
+        scheduler.set_priority(ProcessId::new(99).unwrap(), low),
+        Err(ProcessError::NotFound)
+    );
+}
+
+#[test]
+fn equal_priorities_and_default_policy_preserve_fifo_ties() {
+    let mut scheduler = Scheduler::<2>::new();
+    let a = scheduler
+        .spawn_with_priority(Priority::new(7).unwrap())
+        .unwrap();
+    let b = scheduler
+        .spawn_with_priority(Priority::new(0).unwrap())
+        .unwrap();
+    assert_eq!(scheduler.dispatch(), Some(a));
+    scheduler.set_policy(SchedulingPolicy::PriorityAging);
+    assert_eq!(scheduler.current(), Some(a));
+    assert_eq!(scheduler.reschedule(), Some(b));
+    scheduler.set_policy(SchedulingPolicy::RoundRobin);
+    assert_eq!(scheduler.reschedule(), Some(a));
+}
+
+#[test]
 fn reaping_recycles_slots_but_never_old_identities() {
     let mut scheduler = Scheduler::<1>::new();
     let mut last = 0;
