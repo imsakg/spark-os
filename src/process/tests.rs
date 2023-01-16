@@ -1,6 +1,35 @@
 use super::*;
 
 #[test]
+fn task_statistics_follow_execution_and_survive_zombie_collection() {
+    let mut scheduler = Scheduler::<2>::new();
+    let a = scheduler.spawn().unwrap();
+    let b = scheduler.spawn().unwrap();
+    scheduler.dispatch();
+    scheduler.dispatch();
+    scheduler.tick().unwrap();
+    scheduler.yield_current().unwrap();
+    scheduler.block_current(WaitChannel::new(1)).unwrap();
+    scheduler.wake(b).unwrap();
+    scheduler.sleep_for(1).unwrap();
+    scheduler.tick().unwrap();
+    scheduler.exit_current(9).unwrap();
+    let a_stats = scheduler.processes().get(a).unwrap().stats();
+    assert_eq!(a_stats.runtime_ticks, 1);
+    assert_eq!(a_stats.dispatches, 3);
+    assert_eq!(a_stats.yields, 1);
+    assert_eq!(a_stats.sleeps, 1);
+    assert_eq!(a_stats.wakeups, 1);
+    assert_eq!(a_stats.ready_ticks, 0);
+    let b_stats = scheduler.reap(b).unwrap().stats();
+    assert_eq!(b_stats.runtime_ticks, 1);
+    assert_eq!(b_stats.dispatches, 2);
+    assert_eq!(b_stats.blocks, 1);
+    assert_eq!(b_stats.wakeups, 1);
+    assert_eq!(b_stats.ready_ticks, 1);
+}
+
+#[test]
 fn priority_policy_prefers_urgent_tasks_but_ages_low_priority_waiters() {
     assert_eq!(Priority::new(8), None);
     let high = Priority::new(0).unwrap();

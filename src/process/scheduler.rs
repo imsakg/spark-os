@@ -81,6 +81,8 @@ impl<const N: usize> Scheduler<N> {
         }
         let id = self.stop_current(ProcessState::Sleeping)?;
         self.table.get_mut(id).unwrap().deadline = Some(deadline);
+        let stats = &mut self.table.get_mut(id).unwrap().stats;
+        stats.sleeps = stats.sleeps.saturating_add(1);
         Ok(self.dispatch())
     }
 
@@ -102,6 +104,8 @@ impl<const N: usize> Scheduler<N> {
             };
             self.table.transition(id, ProcessState::Ready).unwrap();
             self.table.get_mut(id).unwrap().deadline = None;
+            let stats = &mut self.table.get_mut(id).unwrap().stats;
+            stats.wakeups = stats.wakeups.saturating_add(1);
             self.ready.enqueue(id).unwrap();
         }
     }
@@ -114,6 +118,13 @@ impl<const N: usize> Scheduler<N> {
     /// Consume one tick without automatically changing the running process.
     pub fn tick(&mut self) -> Result<TickOutcome, ProcessError> {
         self.now = self.now.checked_add(1).ok_or(ProcessError::ClockOverflow)?;
+        for process in self.table.slots.iter_mut().flatten() {
+            if process.state == ProcessState::Running {
+                process.stats.runtime_ticks = process.stats.runtime_ticks.saturating_add(1);
+            } else if process.state == ProcessState::Ready {
+                process.stats.ready_ticks = process.stats.ready_ticks.saturating_add(1);
+            }
+        }
         self.wake_sleepers();
         match self.current {
             None => Ok(TickOutcome::Idle),
@@ -202,6 +213,8 @@ impl<const N: usize> Scheduler<N> {
         if self.current.is_none() {
             if let Some(id) = self.select_next() {
                 self.table.transition(id, ProcessState::Running).unwrap();
+                let stats = &mut self.table.get_mut(id).unwrap().stats;
+                stats.dispatches = stats.dispatches.saturating_add(1);
                 self.current = Some(id);
                 self.remaining = self.quantum;
             }
@@ -217,6 +230,8 @@ impl<const N: usize> Scheduler<N> {
     ) -> Result<Option<ProcessId>, ProcessError> {
         let id = self.stop_current(ProcessState::Blocked)?;
         self.table.get_mut(id).unwrap().wait = Some(channel);
+        let stats = &mut self.table.get_mut(id).unwrap().stats;
+        stats.blocks = stats.blocks.saturating_add(1);
         Ok(self.dispatch())
     }
 
@@ -227,6 +242,8 @@ impl<const N: usize> Scheduler<N> {
         }
         self.table.transition(id, ProcessState::Ready)?;
         self.table.get_mut(id).unwrap().wait = None;
+        let stats = &mut self.table.get_mut(id).unwrap().stats;
+        stats.wakeups = stats.wakeups.saturating_add(1);
         self.ready.enqueue(id).unwrap();
         Ok(())
     }
@@ -291,6 +308,8 @@ impl<const N: usize> Scheduler<N> {
     /// Unlike `reschedule`, yielding while idle is an error with no side effects.
     pub fn yield_current(&mut self) -> Result<Option<ProcessId>, ProcessError> {
         let id = self.stop_current(ProcessState::Ready)?;
+        let stats = &mut self.table.get_mut(id).unwrap().stats;
+        stats.yields = stats.yields.saturating_add(1);
         self.ready.enqueue(id).unwrap();
         Ok(self.dispatch())
     }
@@ -303,6 +322,39 @@ impl<const N: usize> Scheduler<N> {
             self.ready.enqueue(id).unwrap();
         }
         self.dispatch()
+    }
+}
+
+#[cfg(test)]
+mod counter_tests {
+    use super::*;
+    use crate::process::TaskStats;
+
+    #[test]
+    fn task_counters_saturate_under_real_scheduler_operations() {
+        let maximum = TaskStats {
+            runtime_ticks: u64::MAX,
+            ready_ticks: u64::MAX,
+            dispatches: u64::MAX,
+            yields: u64::MAX,
+            blocks: u64::MAX,
+            sleeps: u64::MAX,
+            wakeups: u64::MAX,
+        };
+        let mut scheduler = Scheduler::<2>::new();
+        let a = scheduler.spawn().unwrap();
+        let b = scheduler.spawn().unwrap();
+        scheduler.table.get_mut(a).unwrap().stats = maximum;
+        scheduler.table.get_mut(b).unwrap().stats = maximum;
+        scheduler.dispatch();
+        scheduler.tick().unwrap();
+        scheduler.yield_current().unwrap();
+        scheduler.block_current(WaitChannel::new(1)).unwrap();
+        scheduler.wake(b).unwrap();
+        scheduler.sleep_for(1).unwrap();
+        scheduler.tick().unwrap();
+        assert_eq!(scheduler.table.get(a).unwrap().stats, maximum);
+        assert_eq!(scheduler.table.get(b).unwrap().stats, maximum);
     }
 }
 

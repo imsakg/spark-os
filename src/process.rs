@@ -4,8 +4,10 @@ mod policy;
 mod queue;
 pub use policy::{Priority, SchedulingPolicy, AGING_INTERVAL};
 mod scheduler;
+mod stats;
 pub use queue::{QueueError, RunQueue};
 pub use scheduler::{Scheduler, TickOutcome};
+pub use stats::TaskStats;
 
 /// A nonzero process identifier. Zero is reserved for non-process kernel work.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -118,9 +120,15 @@ pub struct Process {
     exit_code: Option<i32>,
     priority: Priority,
     missed_dispatches: u8,
+    stats: TaskStats,
 }
 
 impl Process {
+    /// Copy the scheduling counters without exposing mutable task metadata.
+    pub const fn stats(&self) -> TaskStats {
+        self.stats
+    }
+
     /// Configured base priority, before dispatch aging.
     pub const fn priority(&self) -> Priority {
         self.priority
@@ -198,6 +206,7 @@ impl<const N: usize> ProcessTable<N> {
             exit_code: None,
             priority: Priority::NORMAL,
             missed_dispatches: 0,
+            stats: TaskStats::default(),
         });
         Ok(id)
     }
