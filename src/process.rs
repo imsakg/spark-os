@@ -6,7 +6,7 @@ pub use policy::{Priority, SchedulingPolicy, AGING_INTERVAL};
 mod scheduler;
 mod stats;
 pub use queue::{QueueError, RunQueue};
-pub use scheduler::{Scheduler, TickOutcome};
+pub use scheduler::{ScheduleDecision, Scheduler, TickOutcome};
 pub use stats::TaskStats;
 
 /// A nonzero process identifier. Zero is reserved for non-process kernel work.

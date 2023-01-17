@@ -16,6 +16,18 @@ pub enum TickOutcome {
     QuantumExpired(ProcessId),
 }
 
+/// Explicit work/idle choice. Idle is kernel work, never an allocated process.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ScheduleDecision {
+    /// Run the selected process; a hardware switch remains the caller's job.
+    Run(ProcessId),
+    /// No runnable task exists; arrange event/deadline wakeups before CPU sleep.
+    Idle {
+        /// Earliest sleeping task deadline, or `None` for event-only/empty idle.
+        next_deadline: Option<u64>,
+    },
+}
+
 /// Allocation-free cooperative scheduler. Mutate only through an exclusive owner.
 pub struct Scheduler<const N: usize> {
     table: ProcessTable<N>,
@@ -25,6 +37,7 @@ pub struct Scheduler<const N: usize> {
     remaining: u32,
     now: u64,
     policy: SchedulingPolicy,
+    idle_ticks: u64,
 }
 
 impl<const N: usize> Scheduler<N> {
@@ -38,6 +51,7 @@ impl<const N: usize> Scheduler<N> {
             remaining: 0,
             now: 0,
             policy: SchedulingPolicy::RoundRobin,
+            idle_ticks: 0,
         }
     }
 
@@ -127,7 +141,10 @@ impl<const N: usize> Scheduler<N> {
         }
         self.wake_sleepers();
         match self.current {
-            None => Ok(TickOutcome::Idle),
+            None => {
+                self.idle_ticks = self.idle_ticks.saturating_add(1);
+                Ok(TickOutcome::Idle)
+            }
             Some(id) => {
                 self.remaining = self.remaining.saturating_sub(1);
                 if self.remaining == 0 {
@@ -208,7 +225,34 @@ impl<const N: usize> Scheduler<N> {
         self.ready.len()
     }
 
-    /// Select the oldest ready process only when no process is running.
+    /// Number of successfully delivered ticks without a running process.
+    pub const fn idle_ticks(&self) -> u64 {
+        self.idle_ticks
+    }
+
+    /// Earliest pending sleep deadline, independent of whether the CPU is idle.
+    pub fn next_wake_deadline(&self) -> Option<u64> {
+        self.table
+            .slots
+            .iter()
+            .flatten()
+            .filter(|p| p.state == ProcessState::Sleeping)
+            .filter_map(|p| p.deadline)
+            .min()
+    }
+
+    /// Dispatch if possible, otherwise return an explicit idle/deadline decision.
+    /// This method does not mask interrupts, program a timer, or execute WFI.
+    pub fn schedule(&mut self) -> ScheduleDecision {
+        match self.dispatch() {
+            Some(id) => ScheduleDecision::Run(id),
+            None => ScheduleDecision::Idle {
+                next_deadline: self.next_wake_deadline(),
+            },
+        }
+    }
+
+    /// Select a ready process using policy only when no process is running.
     pub fn dispatch(&mut self) -> Option<ProcessId> {
         if self.current.is_none() {
             if let Some(id) = self.select_next() {

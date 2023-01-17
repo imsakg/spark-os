@@ -1,6 +1,40 @@
 use super::*;
 
 #[test]
+fn idle_decisions_consume_no_process_slot_and_report_earliest_deadline() {
+    let mut empty = Scheduler::<0>::new();
+    assert_eq!(
+        empty.schedule(),
+        ScheduleDecision::Idle {
+            next_deadline: None
+        }
+    );
+    empty.tick().unwrap();
+    assert_eq!(empty.idle_ticks(), 1);
+    let mut scheduler = Scheduler::<2>::new();
+    let a = scheduler.spawn().unwrap();
+    let b = scheduler.spawn().unwrap();
+    assert_eq!(scheduler.schedule(), ScheduleDecision::Run(a));
+    scheduler.sleep_until(3).unwrap();
+    scheduler.sleep_until(2).unwrap();
+    assert_eq!(
+        scheduler.schedule(),
+        ScheduleDecision::Idle {
+            next_deadline: Some(2)
+        }
+    );
+    assert_eq!(scheduler.processes().len(), 2);
+    scheduler.tick().unwrap();
+    scheduler.tick().unwrap();
+    assert_eq!(scheduler.schedule(), ScheduleDecision::Run(b));
+    assert_eq!(scheduler.next_wake_deadline(), Some(3));
+    assert_eq!(scheduler.idle_ticks(), 2);
+    scheduler.tick().unwrap();
+    assert_eq!(scheduler.idle_ticks(), 2);
+    assert_eq!(scheduler.next_wake_deadline(), None);
+}
+
+#[test]
 fn task_statistics_follow_execution_and_survive_zombie_collection() {
     let mut scheduler = Scheduler::<2>::new();
     let a = scheduler.spawn().unwrap();
