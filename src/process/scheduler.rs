@@ -2,7 +2,7 @@
 
 use super::{
     Priority, Process, ProcessError, ProcessId, ProcessState, ProcessTable, RunQueue,
-    SchedulingPolicy, WaitChannel,
+    SchedulingPolicy, WaitChannel, WaitOutcome,
 };
 
 /// A tick reports policy only; it never switches CPU context.
@@ -116,11 +116,7 @@ impl<const N: usize> Scheduler<N> {
                 Some(id) => id,
                 None => break,
             };
-            self.table.transition(id, ProcessState::Ready).unwrap();
-            self.table.get_mut(id).unwrap().deadline = None;
-            let stats = &mut self.table.get_mut(id).unwrap().stats;
-            stats.wakeups = stats.wakeups.saturating_add(1);
-            self.ready.enqueue(id).unwrap();
+            self.make_ready(id);
         }
     }
 
@@ -169,6 +165,38 @@ impl<const N: usize> Scheduler<N> {
         let id = self.spawn()?;
         self.table.get_mut(id).unwrap().priority = priority;
         Ok(id)
+    }
+
+    /// Admit a child of a live parent, inheriting its configured priority.
+    pub fn spawn_child(&mut self, parent: ProcessId) -> Result<ProcessId, ProcessError> {
+        let process = self.table.get(parent)?;
+        if process.state.is_terminal() {
+            return Err(ProcessError::InvalidParent);
+        }
+        let priority = process.priority;
+        let id = self.spawn_with_priority(priority)?;
+        self.table.get_mut(id).unwrap().parent = Some(parent);
+        Ok(id)
+    }
+
+    /// Reap an already-exited child, otherwise atomically block its running parent.
+    /// Reinvoke after the child-exit wakeup to collect the retained exit snapshot.
+    pub fn wait_child(&mut self, child: ProcessId) -> Result<WaitOutcome, ProcessError> {
+        let parent = self.current.ok_or(ProcessError::NoCurrent)?;
+        let process = self.table.get(child)?;
+        if process.parent != Some(parent) {
+            return Err(ProcessError::NotChild);
+        }
+        if process.state.is_terminal() {
+            return self.reap(child).map(WaitOutcome::Reaped);
+        }
+        self.stop_current(ProcessState::Blocked)?;
+        let process = self.table.get_mut(parent).unwrap();
+        process.waiting_child = Some(child);
+        process.stats.blocks = process.stats.blocks.saturating_add(1);
+        Ok(WaitOutcome::Blocked {
+            next: self.dispatch(),
+        })
     }
 
     /// Select future dispatch policy and reset accumulated aging credits.
@@ -281,15 +309,22 @@ impl<const N: usize> Scheduler<N> {
 
     /// Make one event-blocked process ready without implicitly dispatching it.
     pub fn wake(&mut self, id: ProcessId) -> Result<(), ProcessError> {
-        if self.table.get(id)?.state() != ProcessState::Blocked {
+        let process = self.table.get(id)?;
+        if process.state != ProcessState::Blocked || process.wait.is_none() {
             return Err(ProcessError::InvalidTransition);
         }
-        self.table.transition(id, ProcessState::Ready)?;
-        self.table.get_mut(id).unwrap().wait = None;
-        let stats = &mut self.table.get_mut(id).unwrap().stats;
-        stats.wakeups = stats.wakeups.saturating_add(1);
-        self.ready.enqueue(id).unwrap();
+        self.make_ready(id);
         Ok(())
+    }
+
+    fn make_ready(&mut self, id: ProcessId) {
+        self.table.transition(id, ProcessState::Ready).unwrap();
+        let process = self.table.get_mut(id).unwrap();
+        process.wait = None;
+        process.waiting_child = None;
+        process.deadline = None;
+        process.stats.wakeups = process.stats.wakeups.saturating_add(1);
+        self.ready.enqueue(id).unwrap();
     }
 
     /// Wake the lowest-identity waiter matching this channel, if any.
@@ -322,11 +357,26 @@ impl<const N: usize> Scheduler<N> {
         process.exit_code = Some(code);
         process.wait = None;
         process.deadline = None;
+        process.waiting_child = None;
+        let parent = process.parent;
+        for child in self.table.slots.iter_mut().flatten() {
+            if child.parent == Some(id) {
+                child.parent = None;
+            }
+        }
+        if let Some(parent) = parent {
+            if self.table.get(parent).map_or(false, |p| {
+                p.state == ProcessState::Blocked && p.waiting_child == Some(id)
+            }) {
+                self.make_ready(parent);
+            }
+        }
         Ok(self.dispatch())
     }
 
     /// Collect an exited process's complete metadata and release only its slot.
     /// Process identities remain permanently retired, preventing stale-PID aliasing.
+    /// This is privileged owner cleanup; `wait_child` enforces parent ownership.
     pub fn reap(&mut self, id: ProcessId) -> Result<Process, ProcessError> {
         if self.table.get(id)?.state() != ProcessState::Zombie {
             return Err(ProcessError::NotZombie);

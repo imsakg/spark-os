@@ -1,6 +1,90 @@
 use super::*;
 
 #[test]
+fn parent_wait_is_atomic_and_child_exit_wakes_only_its_parent() {
+    let mut scheduler = Scheduler::<3>::new();
+    let parent = scheduler.spawn().unwrap();
+    let stranger = scheduler.spawn().unwrap();
+    let child = scheduler.spawn_child(parent).unwrap();
+    assert_eq!(
+        scheduler.processes().get(child).unwrap().parent(),
+        Some(parent)
+    );
+    scheduler.dispatch();
+    assert_eq!(scheduler.wait_child(stranger), Err(ProcessError::NotChild));
+    assert_eq!(scheduler.current(), Some(parent));
+    assert_eq!(
+        scheduler.wait_child(child),
+        Ok(WaitOutcome::Blocked {
+            next: Some(stranger)
+        })
+    );
+    assert_eq!(
+        scheduler
+            .processes()
+            .get(parent)
+            .unwrap()
+            .waiting_for_child(),
+        Some(child)
+    );
+    assert_eq!(scheduler.wake(parent), Err(ProcessError::InvalidTransition));
+    scheduler.yield_current().unwrap();
+    assert_eq!(scheduler.current(), Some(child));
+    assert_eq!(scheduler.exit_current(7), Ok(Some(stranger)));
+    assert_eq!(
+        scheduler.processes().get(parent).unwrap().state(),
+        ProcessState::Ready
+    );
+    assert_eq!(
+        scheduler
+            .processes()
+            .get(parent)
+            .unwrap()
+            .waiting_for_child(),
+        None
+    );
+    scheduler.yield_current().unwrap();
+    let reaped = match scheduler.wait_child(child).unwrap() {
+        WaitOutcome::Reaped(process) => process,
+        WaitOutcome::Blocked { .. } => panic!("exited child must be reaped immediately"),
+    };
+    assert_eq!(reaped.exit_code(), Some(7));
+    assert_eq!(scheduler.current(), Some(parent));
+    assert_eq!(scheduler.wait_child(child), Err(ProcessError::NotFound));
+}
+
+#[test]
+fn exiting_parent_orphans_children_and_cannot_spawn_again() {
+    let mut scheduler = Scheduler::<2>::new();
+    assert_eq!(
+        scheduler.wait_child(ProcessId::new(1).unwrap()),
+        Err(ProcessError::NoCurrent)
+    );
+    assert_eq!(
+        scheduler.spawn_child(ProcessId::new(1).unwrap()),
+        Err(ProcessError::NotFound)
+    );
+    let parent = scheduler
+        .spawn_with_priority(Priority::new(2).unwrap())
+        .unwrap();
+    let child = scheduler.spawn_child(parent).unwrap();
+    assert_eq!(
+        scheduler.processes().get(child).unwrap().priority(),
+        Priority::new(2).unwrap()
+    );
+    scheduler.dispatch();
+    scheduler.exit_current(0).unwrap();
+    assert_eq!(scheduler.processes().get(child).unwrap().parent(), None);
+    assert_eq!(
+        scheduler.spawn_child(parent),
+        Err(ProcessError::InvalidParent)
+    );
+    scheduler.reap(parent).unwrap();
+    scheduler.exit_current(0).unwrap();
+    assert_eq!(scheduler.reap(child).unwrap().parent(), None);
+}
+
+#[test]
 fn idle_decisions_consume_no_process_slot_and_report_earliest_deadline() {
     let mut empty = Scheduler::<0>::new();
     assert_eq!(

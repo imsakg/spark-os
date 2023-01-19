@@ -92,6 +92,10 @@ pub enum ProcessError {
     ClockOverflow,
     /// Only exited, retained zombie processes may be reaped.
     NotZombie,
+    /// The requested wait target is not a child of the running process.
+    NotChild,
+    /// An exited process cannot become the parent of a newly admitted task.
+    InvalidParent,
 }
 
 /// Typed event identity. Event delivery and condition checks belong to the caller.
@@ -110,6 +114,18 @@ impl WaitChannel {
     }
 }
 
+/// Result of waiting for one specific child.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WaitOutcome {
+    /// The child had exited; its slot is now free and this is the final snapshot.
+    Reaped(Process),
+    /// The parent is blocked until the specified child exits.
+    Blocked {
+        /// Process selected after the parent blocked, or `None` for idle.
+        next: Option<ProcessId>,
+    },
+}
+
 /// Allocation-free metadata for one process.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Process {
@@ -121,9 +137,21 @@ pub struct Process {
     priority: Priority,
     missed_dispatches: u8,
     stats: TaskStats,
+    parent: Option<ProcessId>,
+    waiting_child: Option<ProcessId>,
 }
 
 impl Process {
+    /// Live parent identity, or `None` for root/orphaned tasks.
+    pub const fn parent(&self) -> Option<ProcessId> {
+        self.parent
+    }
+
+    /// Child identity awaited by a blocked parent, if any.
+    pub const fn waiting_for_child(&self) -> Option<ProcessId> {
+        self.waiting_child
+    }
+
     /// Copy the scheduling counters without exposing mutable task metadata.
     pub const fn stats(&self) -> TaskStats {
         self.stats
@@ -207,6 +235,8 @@ impl<const N: usize> ProcessTable<N> {
             priority: Priority::NORMAL,
             missed_dispatches: 0,
             stats: TaskStats::default(),
+            parent: None,
+            waiting_child: None,
         });
         Ok(id)
     }
