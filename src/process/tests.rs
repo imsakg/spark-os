@@ -1,6 +1,71 @@
 use super::*;
 
 #[test]
+fn saved_context_validates_alignment_and_preserves_callee_saved_registers() {
+    assert_eq!(
+        SavedContext::for_kernel(0, 0x8000),
+        Err(ContextError::InvalidEntry)
+    );
+    assert_eq!(
+        SavedContext::for_kernel(0x1002, 0x8000),
+        Err(ContextError::InvalidEntry)
+    );
+    assert_eq!(
+        SavedContext::for_kernel(0x1000, 0),
+        Err(ContextError::InvalidStack)
+    );
+    assert_eq!(
+        SavedContext::for_kernel(0x1000, 0x8008),
+        Err(ContextError::InvalidStack)
+    );
+    let mut frame = SavedContext::for_kernel(0x1000, 0x8000).unwrap();
+    assert_eq!(frame.program_counter(), 0x1000);
+    assert_eq!(frame.stack_pointer(), 0x8000);
+    for register in 19..=30 {
+        assert_eq!(frame.register(register), Some(0));
+        frame.set_register(register, register as u64 * 7).unwrap();
+        assert_eq!(frame.register(register), Some(register as u64 * 7));
+    }
+    let unchanged = frame;
+    assert_eq!(
+        frame.set_register(18, 1),
+        Err(ContextError::InvalidRegister)
+    );
+    assert_eq!(
+        frame.set_register(usize::MAX, 1),
+        Err(ContextError::InvalidRegister)
+    );
+    assert_eq!(frame.register(31), None);
+    assert_eq!(frame, unchanged);
+    assert_eq!(core::mem::align_of::<SavedContext>(), 16);
+    assert_eq!(core::mem::size_of::<SavedContext>(), 14 * 8);
+}
+
+#[test]
+fn supplied_context_snapshots_attach_to_tasks_without_cpu_switching() {
+    let mut scheduler = Scheduler::<1>::new();
+    let id = scheduler.spawn().unwrap();
+    assert_eq!(scheduler.processes().get(id).unwrap().context(), None);
+    let frame = SavedContext::for_kernel(0x1000, 0x8000).unwrap();
+    scheduler.set_context(id, frame).unwrap();
+    scheduler.dispatch();
+    assert_eq!(
+        scheduler.processes().get(id).unwrap().context(),
+        Some(&frame)
+    );
+    scheduler.exit_current(0).unwrap();
+    assert_eq!(
+        scheduler.set_context(id, frame),
+        Err(ProcessError::InvalidTransition)
+    );
+    assert_eq!(scheduler.reap(id).unwrap().context(), Some(&frame));
+    assert_eq!(
+        scheduler.set_context(id, frame),
+        Err(ProcessError::NotFound)
+    );
+}
+
+#[test]
 fn parent_wait_is_atomic_and_child_exit_wakes_only_its_parent() {
     let mut scheduler = Scheduler::<3>::new();
     let parent = scheduler.spawn().unwrap();

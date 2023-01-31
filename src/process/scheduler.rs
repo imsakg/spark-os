@@ -1,7 +1,7 @@
 //! Exclusive-owner single-core scheduling decisions, not hardware switching.
 
 use super::{
-    Priority, Process, ProcessError, ProcessId, ProcessState, ProcessTable, RunQueue,
+    Priority, Process, ProcessError, ProcessId, ProcessState, ProcessTable, RunQueue, SavedContext,
     SchedulingPolicy, WaitChannel, WaitOutcome,
 };
 
@@ -215,6 +215,20 @@ impl<const N: usize> Scheduler<N> {
             return Err(ProcessError::InvalidTransition);
         }
         process.priority = priority;
+        Ok(())
+    }
+
+    /// Store caller-supplied context data for a live task, not CPU registers.
+    pub fn set_context(
+        &mut self,
+        id: ProcessId,
+        context: SavedContext,
+    ) -> Result<(), ProcessError> {
+        let process = self.table.get_mut(id)?;
+        if process.state.is_terminal() {
+            return Err(ProcessError::InvalidTransition);
+        }
+        process.context = Some(context);
         Ok(())
     }
 

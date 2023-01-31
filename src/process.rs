@@ -1,6 +1,8 @@
 //! Process lifecycle and cooperative scheduling.
 
+mod context;
 mod policy;
+pub use context::{ContextError, SavedContext};
 mod queue;
 pub use policy::{Priority, SchedulingPolicy, AGING_INTERVAL};
 mod scheduler;
@@ -139,9 +141,15 @@ pub struct Process {
     stats: TaskStats,
     parent: Option<ProcessId>,
     waiting_child: Option<ProcessId>,
+    context: Option<SavedContext>,
 }
 
 impl Process {
+    /// Caller-supplied context data, if installed; no live register capture occurs.
+    pub const fn context(&self) -> Option<&SavedContext> {
+        self.context.as_ref()
+    }
+
     /// Live parent identity, or `None` for root/orphaned tasks.
     pub const fn parent(&self) -> Option<ProcessId> {
         self.parent
@@ -237,6 +245,7 @@ impl<const N: usize> ProcessTable<N> {
             stats: TaskStats::default(),
             parent: None,
             waiting_child: None,
+            context: None,
         });
         Ok(id)
     }
