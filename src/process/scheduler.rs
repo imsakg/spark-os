@@ -1,8 +1,8 @@
 //! Exclusive-owner single-core scheduling decisions, not hardware switching.
 
 use super::{
-    Priority, Process, ProcessError, ProcessId, ProcessState, ProcessTable, RunQueue, SavedContext,
-    SchedulingPolicy, WaitChannel, WaitOutcome,
+    InvariantError, Priority, Process, ProcessError, ProcessId, ProcessState, ProcessTable,
+    RunQueue, SavedContext, SchedulingPolicy, WaitChannel, WaitOutcome,
 };
 
 /// A tick reports policy only; it never switches CPU context.
@@ -267,6 +267,110 @@ impl<const N: usize> Scheduler<N> {
         self.ready.len()
     }
 
+    /// Read ready identities in FIFO admission order, not priority selection order.
+    pub fn ready_ids(&self) -> impl Iterator<Item = ProcessId> + '_ {
+        self.ready.iter()
+    }
+
+    /// Check identity, queue, lifecycle, family, wait, exit, and slice invariants.
+    /// This allocation-free O(N²) diagnostic is intended for selftests, not IRQs.
+    pub fn check_invariants(&self) -> Result<(), InvariantError> {
+        if self.table.ids.next == Some(0) {
+            return Err(InvariantError::Identity);
+        }
+        let running = self
+            .table
+            .iter()
+            .filter(|p| p.state == ProcessState::Running)
+            .count();
+        if running != usize::from(self.current.is_some())
+            || self.current.map_or(false, |id| {
+                self.table
+                    .get(id)
+                    .map_or(true, |p| p.state != ProcessState::Running)
+            })
+        {
+            return Err(InvariantError::Current);
+        }
+        if self.quantum == 0
+            || self.remaining > self.quantum
+            || (self.current.is_none() && self.remaining != 0)
+        {
+            return Err(InvariantError::Quantum);
+        }
+        for id in self.ready.iter() {
+            if self
+                .table
+                .get(id)
+                .map_or(true, |p| p.state != ProcessState::Ready)
+            {
+                return Err(InvariantError::ReadyQueue);
+            }
+        }
+        for process in self.table.iter() {
+            if process.id.get() == 0
+                || self.table.iter().filter(|p| p.id == process.id).count() != 1
+                || self
+                    .table
+                    .ids
+                    .next
+                    .map_or(false, |next| next <= process.id.get())
+            {
+                return Err(InvariantError::Identity);
+            }
+            let admissions = self.ready.iter().filter(|id| *id == process.id).count();
+            if admissions != usize::from(process.state == ProcessState::Ready) {
+                return Err(InvariantError::ReadyQueue);
+            }
+            if process.exit_code.is_some() != process.state.is_terminal() {
+                return Err(InvariantError::ExitMetadata);
+            }
+            match process.state {
+                ProcessState::Blocked => {
+                    if process.deadline.is_some()
+                        || process.wait.is_some() == process.waiting_child.is_some()
+                    {
+                        return Err(InvariantError::WaitMetadata);
+                    }
+                }
+                ProcessState::Sleeping => {
+                    if process.wait.is_some()
+                        || process.waiting_child.is_some()
+                        || process.deadline.map_or(true, |d| d <= self.now)
+                    {
+                        return Err(InvariantError::WaitMetadata);
+                    }
+                }
+                _ => {
+                    if process.wait.is_some()
+                        || process.waiting_child.is_some()
+                        || process.deadline.is_some()
+                    {
+                        return Err(InvariantError::WaitMetadata);
+                    }
+                }
+            }
+            if let Some(parent) = process.parent {
+                if parent >= process.id
+                    || self
+                        .table
+                        .get(parent)
+                        .map_or(true, |p| p.state.is_terminal())
+                {
+                    return Err(InvariantError::Parent);
+                }
+            }
+            if let Some(child) = process.waiting_child {
+                if self.table.get(child).map_or(true, |p| {
+                    p.parent != Some(process.id) || p.state.is_terminal()
+                }) {
+                    return Err(InvariantError::Parent);
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Number of successfully delivered ticks without a running process.
     pub const fn idle_ticks(&self) -> u64 {
         self.idle_ticks
@@ -437,6 +541,63 @@ impl<const N: usize> Scheduler<N> {
 mod counter_tests {
     use super::*;
     use crate::process::TaskStats;
+
+    #[test]
+    fn diagnostics_reject_corrupted_identity_queue_current_wait_exit_and_family() {
+        let make = || {
+            let mut scheduler = Scheduler::<1>::new();
+            let id = scheduler.spawn().unwrap();
+            (scheduler, id)
+        };
+        let (mut scheduler, _) = make();
+        scheduler.table.ids.next = Some(0);
+        assert_eq!(scheduler.check_invariants(), Err(InvariantError::Identity));
+        let (mut scheduler, id) = make();
+        scheduler.ready.remove(id);
+        assert_eq!(
+            scheduler.check_invariants(),
+            Err(InvariantError::ReadyQueue)
+        );
+        let (mut scheduler, id) = make();
+        scheduler.current = Some(id);
+        assert_eq!(scheduler.check_invariants(), Err(InvariantError::Current));
+        let (mut scheduler, _) = make();
+        scheduler.quantum = 0;
+        assert_eq!(scheduler.check_invariants(), Err(InvariantError::Quantum));
+        let (mut scheduler, id) = make();
+        scheduler.dispatch();
+        scheduler.block_current(WaitChannel::new(1)).unwrap();
+        scheduler.table.get_mut(id).unwrap().wait = None;
+        assert_eq!(
+            scheduler.check_invariants(),
+            Err(InvariantError::WaitMetadata)
+        );
+        let (mut scheduler, id) = make();
+        scheduler.table.get_mut(id).unwrap().exit_code = Some(0);
+        assert_eq!(
+            scheduler.check_invariants(),
+            Err(InvariantError::ExitMetadata)
+        );
+        let (mut scheduler, id) = make();
+        scheduler.table.get_mut(id).unwrap().parent = Some(id);
+        assert_eq!(scheduler.check_invariants(), Err(InvariantError::Parent));
+    }
+
+    #[test]
+    fn scheduler_reports_pid_exhaustion_after_last_identity_is_reaped() {
+        let mut scheduler = Scheduler::<1>::new();
+        scheduler.table.ids =
+            super::super::PidAllocator::starting_at(ProcessId::new(u64::MAX).unwrap());
+        let last = scheduler.spawn().unwrap();
+        scheduler.dispatch();
+        scheduler.exit_current(0).unwrap();
+        scheduler.reap(last).unwrap();
+        assert_eq!(scheduler.spawn(), Err(ProcessError::IdExhausted));
+        assert_eq!(scheduler.current(), None);
+        assert_eq!(scheduler.ready_len(), 0);
+        assert!(scheduler.processes().is_empty());
+        assert_eq!(scheduler.check_invariants(), Ok(()));
+    }
 
     #[test]
     fn task_counters_saturate_under_real_scheduler_operations() {

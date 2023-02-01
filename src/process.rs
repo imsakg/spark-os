@@ -1,6 +1,8 @@
 //! Process lifecycle and cooperative scheduling.
 
 mod context;
+mod invariants;
+pub use invariants::InvariantError;
 mod policy;
 pub use context::{ContextError, SavedContext};
 mod queue;
@@ -282,6 +284,11 @@ impl<const N: usize> ProcessTable<N> {
             .ok_or(ProcessError::NotFound)
     }
 
+    /// Iterate occupied slots in storage order, including retained zombies.
+    pub fn iter(&self) -> impl Iterator<Item = &Process> {
+        self.slots.iter().flatten()
+    }
+
     /// Look up a process by identity, never by unchecked slot index.
     pub fn get(&self, id: ProcessId) -> Result<&Process, ProcessError> {
         self.slots
@@ -329,6 +336,9 @@ impl Default for PidAllocator {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod model_tests;
 
 #[cfg(test)]
 mod tests;
