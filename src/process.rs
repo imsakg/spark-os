@@ -1,4 +1,10 @@
-//! Process lifecycle and cooperative scheduling.
+//! Process lifecycle and cooperative scheduling decisions, without heap allocation.
+//!
+//! [`Scheduler`] combines a fixed-capacity table and duplicate-free ready queue
+//! under one exclusive owner. Tick expiry requests a scheduling point; it never
+//! switches CPU execution. [`SavedContext`] is validated caller-supplied frame
+//! data, not live register capture. [`self_test`] exercises the model locally for
+//! boot diagnostics without consuming real scheduler identities or ticks.
 
 mod context;
 mod invariants;
@@ -8,9 +14,11 @@ pub use context::{ContextError, SavedContext};
 mod queue;
 pub use policy::{Priority, SchedulingPolicy, AGING_INTERVAL};
 mod scheduler;
+mod selftest;
 mod stats;
 pub use queue::{QueueError, RunQueue};
 pub use scheduler::{ScheduleDecision, Scheduler, TickOutcome};
+pub use selftest::{self_test, SelfTestError};
 pub use stats::TaskStats;
 
 /// A nonzero process identifier. Zero is reserved for non-process kernel work.

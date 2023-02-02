@@ -1,6 +1,38 @@
 use super::*;
 
 #[test]
+fn boot_self_test_is_repeatable_and_leaves_owner_state_untouched() {
+    let mut scheduler = Scheduler::<2>::with_quantum(3).unwrap();
+    let id = scheduler.spawn().unwrap();
+    scheduler.dispatch();
+    scheduler.tick().unwrap();
+    let before = (
+        *scheduler.processes().get(id).unwrap(),
+        scheduler.current(),
+        scheduler.now(),
+        scheduler.remaining_quantum(),
+        scheduler.ready_len(),
+        scheduler.idle_ticks(),
+    );
+    for _ in 0..3 {
+        assert_eq!(self_test(), Ok(()));
+    }
+    assert_eq!(
+        (
+            *scheduler.processes().get(id).unwrap(),
+            scheduler.current(),
+            scheduler.now(),
+            scheduler.remaining_quantum(),
+            scheduler.ready_len(),
+            scheduler.idle_ticks(),
+        ),
+        before
+    );
+    assert_eq!(scheduler.spawn().unwrap().get(), id.get() + 1);
+    assert_eq!(scheduler.check_invariants(), Ok(()));
+}
+
+#[test]
 fn saved_context_validates_alignment_and_preserves_callee_saved_registers() {
     assert_eq!(
         SavedContext::for_kernel(0, 0x8000),
