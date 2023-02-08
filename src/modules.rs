@@ -39,6 +39,17 @@ pub enum Error {
     Duplicate,
     /// All descriptor slots are occupied.
     Full,
+    /// A named prerequisite has not been registered.
+    MissingDependency(&'static str),
+    /// The dependency graph contains a cycle.
+    DependencyCycle,
+    /// An initialization hook failed.
+    Initialization {
+        /// Name of the failing module.
+        module: &'static str,
+        /// Failure code supplied by the hook.
+        fault: ModuleFault,
+    },
 }
 
 struct Entry {
@@ -77,6 +88,75 @@ impl<const N: usize> Registry<N> {
             state: Cell::new(State::Registered),
         });
         Ok(())
+    }
+
+    /// Initialize inactive modules in dependency order.
+    ///
+    /// Missing names and cycles are checked before any callback runs. Active
+    /// modules are not started again. Failed modules may be retried explicitly
+    /// by calling this method again.
+    pub fn initialize(&mut self) -> Result<(), Error> {
+        let (order, count) = self.plan()?;
+        for &index in &order[..count] {
+            let entry = self.entries[index].as_ref().unwrap();
+            if let Err(fault) = (entry.descriptor.start)() {
+                entry.state.set(State::Failed);
+                return Err(Error::Initialization {
+                    module: entry.descriptor.name,
+                    fault,
+                });
+            }
+            entry.state.set(State::Active);
+        }
+        Ok(())
+    }
+
+    fn plan(&self) -> Result<([usize; N], usize), Error> {
+        for entry in self.entries.iter().flatten() {
+            for &dependency in entry.descriptor.dependencies {
+                if self.find(dependency).is_none() {
+                    return Err(Error::MissingDependency(dependency));
+                }
+            }
+        }
+        let mut selected = [false; N];
+        let mut remaining = 0;
+        for (index, slot) in self.entries.iter().enumerate() {
+            selected[index] = slot
+                .as_ref()
+                .map_or(true, |e| e.state.get() == State::Active);
+            if !selected[index] {
+                remaining += 1;
+            }
+        }
+        let mut order = [0; N];
+        let mut count = 0;
+        while remaining != 0 {
+            let before = remaining;
+            for (index, slot) in self.entries.iter().enumerate() {
+                if selected[index] {
+                    continue;
+                }
+                let entry = slot.as_ref().unwrap();
+                let ready = entry.descriptor.dependencies.iter().all(|dependency| {
+                    self.entries.iter().enumerate().any(|(i, e)| {
+                        selected[i]
+                            && e.as_ref()
+                                .map_or(false, |e| e.descriptor.name == *dependency)
+                    })
+                });
+                if ready {
+                    selected[index] = true;
+                    order[count] = index;
+                    count += 1;
+                    remaining -= 1;
+                }
+            }
+            if remaining == before {
+                return Err(Error::DependencyCycle);
+            }
+        }
+        Ok((order, count))
     }
 
     fn find(&self, name: &str) -> Option<&Entry> {
@@ -148,5 +228,75 @@ mod registry_tests {
             Registry::<0>::new().register(descriptor("x")),
             Err(Error::Full)
         );
+    }
+}
+
+#[cfg(test)]
+mod dependency_tests {
+    use super::*;
+    use std::sync::Mutex;
+    static CALLS: Mutex<std::vec::Vec<u8>> = Mutex::new(std::vec::Vec::new());
+    fn first() -> Result<(), ModuleFault> {
+        CALLS.lock().unwrap().push(1);
+        Ok(())
+    }
+    fn second() -> Result<(), ModuleFault> {
+        CALLS.lock().unwrap().push(2);
+        Ok(())
+    }
+    fn stop() {}
+    #[test]
+    fn dependencies_start_before_reverse_registered_consumers() {
+        CALLS.lock().unwrap().clear();
+        let mut registry = Registry::<3>::new();
+        registry
+            .register(Descriptor {
+                name: "console",
+                dependencies: &["uart"],
+                start: second,
+                stop,
+            })
+            .unwrap();
+        registry
+            .register(Descriptor {
+                name: "uart",
+                dependencies: &[],
+                start: first,
+                stop,
+            })
+            .unwrap();
+        assert_eq!(registry.initialize(), Ok(()));
+        assert_eq!(*CALLS.lock().unwrap(), [1, 2]);
+        assert_eq!(registry.state("console"), Some(State::Active));
+        registry.initialize().unwrap();
+        assert_eq!(*CALLS.lock().unwrap(), [1, 2]);
+    }
+    fn ok() -> Result<(), ModuleFault> {
+        Ok(())
+    }
+    #[test]
+    fn missing_and_cyclic_graphs_are_rejected_before_start() {
+        let mut registry = Registry::<2>::new();
+        registry
+            .register(Descriptor {
+                name: "x",
+                dependencies: &["y"],
+                start: ok,
+                stop,
+            })
+            .unwrap();
+        assert_eq!(registry.initialize(), Err(Error::MissingDependency("y")));
+        assert_eq!(registry.state("x"), Some(State::Registered));
+        registry
+            .register(Descriptor {
+                name: "y",
+                dependencies: &["x"],
+                start: ok,
+                stop,
+            })
+            .unwrap();
+        assert_eq!(registry.initialize(), Err(Error::DependencyCycle));
+        assert_eq!(registry.state("x"), Some(State::Registered));
+        assert_eq!(registry.state("y"), Some(State::Registered));
     }
 }
