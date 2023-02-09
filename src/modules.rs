@@ -93,14 +93,20 @@ impl<const N: usize> Registry<N> {
     /// Initialize inactive modules in dependency order.
     ///
     /// Missing names and cycles are checked before any callback runs. Active
-    /// modules are not started again. Failed modules may be retried explicitly
-    /// by calling this method again.
+    /// modules are not started again. A failure stops newly initialized modules
+    /// in reverse order, preserving preexisting active modules. Failed modules
+    /// may be retried explicitly by calling this method again.
     pub fn initialize(&mut self) -> Result<(), Error> {
         let (order, count) = self.plan()?;
-        for &index in &order[..count] {
+        for (completed, &index) in order[..count].iter().enumerate() {
             let entry = self.entries[index].as_ref().unwrap();
             if let Err(fault) = (entry.descriptor.start)() {
                 entry.state.set(State::Failed);
+                for &previous in order[..completed].iter().rev() {
+                    let started = self.entries[previous].as_ref().unwrap();
+                    (started.descriptor.stop)();
+                    started.state.set(State::Registered);
+                }
                 return Err(Error::Initialization {
                     module: entry.descriptor.name,
                     fault,
@@ -298,5 +304,84 @@ mod dependency_tests {
         assert_eq!(registry.initialize(), Err(Error::DependencyCycle));
         assert_eq!(registry.state("x"), Some(State::Registered));
         assert_eq!(registry.state("y"), Some(State::Registered));
+    }
+}
+
+#[cfg(test)]
+mod rollback_tests {
+    use super::*;
+    use std::sync::Mutex;
+    static EVENTS: Mutex<std::vec::Vec<u8>> = Mutex::new(std::vec::Vec::new());
+    fn start_a() -> Result<(), ModuleFault> {
+        EVENTS.lock().unwrap().push(1);
+        Ok(())
+    }
+    fn start_b() -> Result<(), ModuleFault> {
+        EVENTS.lock().unwrap().push(2);
+        Ok(())
+    }
+    fn fail() -> Result<(), ModuleFault> {
+        EVENTS.lock().unwrap().push(3);
+        Err(ModuleFault(42))
+    }
+    fn stop_a() {
+        EVENTS.lock().unwrap().push(5);
+    }
+    fn stop_b() {
+        EVENTS.lock().unwrap().push(4);
+    }
+    fn unused() {
+        panic!("failed initializer must clean itself; stop is not called");
+    }
+    #[test]
+    fn failure_rolls_back_only_newly_started_modules_in_reverse_order() {
+        EVENTS.lock().unwrap().clear();
+        let mut registry = Registry::<4>::new();
+        registry
+            .register(Descriptor {
+                name: "base",
+                dependencies: &[],
+                start: start_a,
+                stop: unused,
+            })
+            .unwrap();
+        registry.initialize().unwrap();
+        EVENTS.lock().unwrap().clear();
+        registry
+            .register(Descriptor {
+                name: "a",
+                dependencies: &["base"],
+                start: start_a,
+                stop: stop_a,
+            })
+            .unwrap();
+        registry
+            .register(Descriptor {
+                name: "b",
+                dependencies: &["a"],
+                start: start_b,
+                stop: stop_b,
+            })
+            .unwrap();
+        registry
+            .register(Descriptor {
+                name: "bad",
+                dependencies: &["b"],
+                start: fail,
+                stop: unused,
+            })
+            .unwrap();
+        assert_eq!(
+            registry.initialize(),
+            Err(Error::Initialization {
+                module: "bad",
+                fault: ModuleFault(42)
+            })
+        );
+        assert_eq!(*EVENTS.lock().unwrap(), [1, 2, 3, 4, 5]);
+        assert_eq!(registry.state("base"), Some(State::Active));
+        assert_eq!(registry.state("a"), Some(State::Registered));
+        assert_eq!(registry.state("b"), Some(State::Registered));
+        assert_eq!(registry.state("bad"), Some(State::Failed));
     }
 }
