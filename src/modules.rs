@@ -39,6 +39,14 @@ pub enum Error {
     Duplicate,
     /// All descriptor slots are occupied.
     Full,
+    /// No module has the requested name.
+    NotFound,
+    /// The module is not currently running.
+    NotActive,
+    /// A usage lease or active state prevents the operation.
+    Busy,
+    /// A running consumer still needs the module.
+    DependentActive(&'static str),
     /// A named prerequisite has not been registered.
     MissingDependency(&'static str),
     /// The dependency graph contains a cycle.
@@ -55,6 +63,28 @@ pub enum Error {
 struct Entry {
     descriptor: Descriptor,
     state: Cell<State>,
+    users: Cell<u32>,
+}
+
+/// A counted usage lease; dropping it releases one user of an active module.
+///
+/// Leases do not expose dynamically loaded code. The registry is single-core
+/// serialized (`!Sync`); callers must not bypass this boundary from interrupts.
+pub struct ModuleLease<'a> {
+    entry: &'a Entry,
+}
+
+impl ModuleLease<'_> {
+    /// Immutable metadata for the leased module.
+    pub fn descriptor(&self) -> &Descriptor {
+        &self.entry.descriptor
+    }
+}
+
+impl Drop for ModuleLease<'_> {
+    fn drop(&mut self) {
+        self.entry.users.set(self.entry.users.get() - 1);
+    }
 }
 
 /// Bounded module registry; no code loading, allocation, or interrupt synchronization.
@@ -86,6 +116,7 @@ impl<const N: usize> Registry<N> {
         *slot = Some(Entry {
             descriptor,
             state: Cell::new(State::Registered),
+            users: Cell::new(0),
         });
         Ok(())
     }
@@ -114,6 +145,38 @@ impl<const N: usize> Registry<N> {
             }
             entry.state.set(State::Active);
         }
+        Ok(())
+    }
+
+    /// Hold a running module in use until the returned lease is dropped.
+    pub fn lease(&self, name: &str) -> Result<ModuleLease<'_>, Error> {
+        let entry = self.find(name).ok_or(Error::NotFound)?;
+        if entry.state.get() != State::Active {
+            return Err(Error::NotActive);
+        }
+        let users = entry.users.get().checked_add(1).ok_or(Error::Busy)?;
+        entry.users.set(users);
+        Ok(ModuleLease { entry })
+    }
+
+    /// Stop an unleased module with no active consumers; retain its descriptor.
+    pub fn unload(&self, name: &str) -> Result<(), Error> {
+        let entry = self.find(name).ok_or(Error::NotFound)?;
+        if entry.state.get() != State::Active {
+            return Err(Error::NotActive);
+        }
+        if entry.users.get() != 0 {
+            return Err(Error::Busy);
+        }
+        for consumer in self.entries.iter().flatten() {
+            if consumer.state.get() == State::Active
+                && consumer.descriptor.dependencies.contains(&name)
+            {
+                return Err(Error::DependentActive(consumer.descriptor.name));
+            }
+        }
+        (entry.descriptor.stop)();
+        entry.state.set(State::Registered);
         Ok(())
     }
 
@@ -383,5 +446,55 @@ mod rollback_tests {
         assert_eq!(registry.state("a"), Some(State::Registered));
         assert_eq!(registry.state("b"), Some(State::Registered));
         assert_eq!(registry.state("bad"), Some(State::Failed));
+    }
+}
+
+#[cfg(test)]
+mod unload_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static STOPS: AtomicUsize = AtomicUsize::new(0);
+    fn start() -> Result<(), ModuleFault> {
+        Ok(())
+    }
+    fn stop() {
+        STOPS.fetch_add(1, Ordering::SeqCst);
+    }
+    #[test]
+    fn leases_and_active_dependents_block_unload() {
+        STOPS.store(0, Ordering::SeqCst);
+        let mut registry = Registry::<2>::new();
+        registry
+            .register(Descriptor {
+                name: "uart",
+                dependencies: &[],
+                start,
+                stop,
+            })
+            .unwrap();
+        registry
+            .register(Descriptor {
+                name: "console",
+                dependencies: &["uart"],
+                start,
+                stop,
+            })
+            .unwrap();
+        assert!(matches!(registry.lease("uart"), Err(Error::NotActive)));
+        registry.initialize().unwrap();
+        assert_eq!(
+            registry.unload("uart"),
+            Err(Error::DependentActive("console"))
+        );
+        let lease = registry.lease("console").unwrap();
+        assert_eq!(lease.descriptor().name, "console");
+        assert_eq!(registry.unload("console"), Err(Error::Busy));
+        assert_eq!(STOPS.load(Ordering::SeqCst), 0);
+        drop(lease);
+        registry.unload("console").unwrap();
+        registry.unload("uart").unwrap();
+        assert_eq!(STOPS.load(Ordering::SeqCst), 2);
+        assert_eq!(registry.unload("uart"), Err(Error::NotActive));
+        assert_eq!(registry.unload("absent"), Err(Error::NotFound));
     }
 }
