@@ -47,6 +47,8 @@ pub enum Error {
     Busy,
     /// A running consumer still needs the module.
     DependentActive(&'static str),
+    /// Another registered descriptor still names this prerequisite.
+    ReferencedBy(&'static str),
     /// A named prerequisite has not been registered.
     MissingDependency(&'static str),
     /// The dependency graph contains a cycle.
@@ -177,6 +179,35 @@ impl<const N: usize> Registry<N> {
         }
         (entry.descriptor.stop)();
         entry.state.set(State::Registered);
+        Ok(())
+    }
+
+    /// Iterate metadata in slot order, skipping vacant slots.
+    pub fn descriptors(&self) -> impl Iterator<Item = &Descriptor> {
+        self.entries.iter().flatten().map(|entry| &entry.descriptor)
+    }
+
+    /// Remove inactive metadata only after all consumers have been removed.
+    pub fn unregister(&mut self, name: &str) -> Result<(), Error> {
+        let index = self
+            .entries
+            .iter()
+            .position(|entry| {
+                entry
+                    .as_ref()
+                    .map_or(false, |entry| entry.descriptor.name == name)
+            })
+            .ok_or(Error::NotFound)?;
+        let entry = self.entries[index].as_ref().unwrap();
+        if entry.state.get() == State::Active || entry.users.get() != 0 {
+            return Err(Error::Busy);
+        }
+        for consumer in self.entries.iter().flatten() {
+            if consumer.descriptor.dependencies.contains(&name) {
+                return Err(Error::ReferencedBy(consumer.descriptor.name));
+            }
+        }
+        self.entries[index] = None;
         Ok(())
     }
 
@@ -496,5 +527,54 @@ mod unload_tests {
         assert_eq!(STOPS.load(Ordering::SeqCst), 2);
         assert_eq!(registry.unload("uart"), Err(Error::NotActive));
         assert_eq!(registry.unload("absent"), Err(Error::NotFound));
+    }
+}
+
+#[cfg(test)]
+mod capacity_tests {
+    use super::*;
+    fn start() -> Result<(), ModuleFault> {
+        Ok(())
+    }
+    fn stop() {}
+    fn descriptor(name: &'static str, dependencies: &'static [&'static str]) -> Descriptor {
+        Descriptor {
+            name,
+            dependencies,
+            start,
+            stop,
+        }
+    }
+    #[test]
+    fn removal_reuses_slots_without_stale_lookup_or_dangling_dependencies() {
+        let mut registry = Registry::<2>::new();
+        registry.register(descriptor("a", &[])).unwrap();
+        registry.register(descriptor("b", &["a"])).unwrap();
+        assert_eq!(registry.unregister("a"), Err(Error::ReferencedBy("b")));
+        assert_eq!(registry.unregister("missing"), Err(Error::NotFound));
+        registry.unregister("b").unwrap();
+        assert_eq!(registry.state("b"), None);
+        registry.register(descriptor("c", &[])).unwrap();
+        let names: std::vec::Vec<_> = registry.descriptors().map(|d| d.name).collect();
+        assert_eq!(names, ["a", "c"]);
+        assert_eq!(registry.len(), 2);
+        registry.initialize().unwrap();
+        assert_eq!(registry.unregister("c"), Err(Error::Busy));
+        registry.unload("c").unwrap();
+        registry.unregister("c").unwrap();
+        registry.unload("a").unwrap();
+        registry.unregister("a").unwrap();
+        assert!(registry.is_empty());
+        assert_eq!(registry.descriptors().count(), 0);
+    }
+    #[test]
+    fn usage_counter_overflow_is_rejected_without_wrapping() {
+        let mut registry = Registry::<1>::new();
+        registry.register(descriptor("a", &[])).unwrap();
+        registry.initialize().unwrap();
+        let entry = registry.find("a").unwrap();
+        entry.users.set(u32::MAX);
+        assert!(matches!(registry.lease("a"), Err(Error::Busy)));
+        assert_eq!(entry.users.get(), u32::MAX);
     }
 }
