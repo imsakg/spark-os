@@ -6,6 +6,7 @@
 /// Kernel ABI revision for the initial service interfaces.
 pub const ABI_VERSION: u32 = 1;
 
+pub mod drivers;
 pub mod memory;
 pub mod modules;
 pub mod process;
