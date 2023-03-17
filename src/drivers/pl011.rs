@@ -12,9 +12,38 @@ const BUSY: u32 = 1 << 3;
 pub enum UartError {
     /// The requested condition was not observed within the register-read budget.
     Timeout,
+    /// Clock/baud is zero or cannot be represented by PL011 divisors.
+    InvalidBaud,
     /// UARTDR bits 11:8: overrun, break, parity, framing (high to low).
     /// The erroneous byte is discarded and UARTECR is cleared before returning.
     Receive(u8),
+}
+
+/// Checked integer and six-bit fractional baud divisors.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BaudDivisors {
+    /// UARTIBRD, in the inclusive range 1..=65535.
+    pub integer: u16,
+    /// UARTFBRD, in the inclusive range 0..=63.
+    pub fractional: u8,
+}
+
+impl BaudDivisors {
+    /// Round `clock_hz / (16 * baud)` to the nearest 1/64, carrying into IBRD.
+    /// The clock must be the actual UART input clock, not the CPU/core clock.
+    pub fn calculate(clock_hz: u32, baud: u32) -> Result<Self, UartError> {
+        if clock_hz == 0 || baud == 0 {
+            return Err(UartError::InvalidBaud);
+        }
+        let scaled = (u64::from(clock_hz) * 4 + u64::from(baud) / 2) / u64::from(baud);
+        if scaled < 64 || scaled / 64 > u64::from(u16::MAX) {
+            return Err(UartError::InvalidBaud);
+        }
+        Ok(Self {
+            integer: (scaled / 64) as u16,
+            fractional: (scaled % 64) as u8,
+        })
+    }
 }
 
 /// An exclusively owned PL011 register transport, not yet necessarily configured.
@@ -26,6 +55,25 @@ impl<T: RegisterIo> Pl011<T> {
     /// Bind a transport whose base is the UART register block.
     pub fn new(io: T) -> Self {
         Self { io }
+    }
+
+    /// Configure polling-only 8-N-1 with FIFOs, RX, and TX enabled.
+    ///
+    /// Invalid divisors cause no I/O. Initialization disables the UART before
+    /// waiting for idle; timeout leaves it disabled. Firmware clock setup,
+    /// pin muxing, and board-specific ordering remain caller responsibilities.
+    pub fn initialize(&mut self, clock_hz: u32, baud: u32, polls: usize) -> Result<(), UartError> {
+        let divisors = BaudDivisors::calculate(clock_hz, baud)?;
+        self.io.write32(0x30, 0);
+        self.flush(polls)?;
+        self.io.write32(0x38, 0);
+        self.io.write32(0x44, 0x7ff);
+        self.io.write32(0x04, 0xf);
+        self.io.write32(0x24, u32::from(divisors.integer));
+        self.io.write32(0x28, u32::from(divisors.fractional));
+        self.io.write32(0x2c, (3 << 5) | (1 << 4));
+        self.io.write32(0x30, (1 << 9) | (1 << 8) | 1);
+        Ok(())
     }
 
     /// Recover ownership of the transport without changing UART registers.
@@ -141,5 +189,64 @@ mod receive_tests {
             assert_eq!(uart.read_byte(1), Err(UartError::Receive(flags)));
             uart.release().done();
         }
+    }
+}
+
+#[cfg(test)]
+mod configuration_tests {
+    use super::*;
+    use crate::drivers::test_support::{
+        Access::{Read, Write},
+        FakeIo,
+    };
+    #[test]
+    fn divisors_round_fractional_carry_and_reject_invalid_ranges() {
+        assert_eq!(
+            BaudDivisors::calculate(48_000_000, 115_200),
+            Ok(BaudDivisors {
+                integer: 26,
+                fractional: 3
+            })
+        );
+        assert_eq!(
+            BaudDivisors::calculate(255, 16),
+            Ok(BaudDivisors {
+                integer: 1,
+                fractional: 0
+            })
+        );
+        for (clock, baud) in [(0, 1), (1, 0), (1, 115_200), (u32::MAX, 1)] {
+            assert_eq!(
+                BaudDivisors::calculate(clock, baud),
+                Err(UartError::InvalidBaud)
+            );
+        }
+    }
+    #[test]
+    fn configuration_programs_8n1_fifo_only_after_idle() {
+        let mut uart = Pl011::new(FakeIo::new([
+            Write(0x30, 0),
+            Read(0x18, 1 << 3),
+            Read(0x18, 0),
+            Write(0x38, 0),
+            Write(0x44, 0x7ff),
+            Write(4, 15),
+            Write(0x24, 26),
+            Write(0x28, 3),
+            Write(0x2c, 0x70),
+            Write(0x30, 0x301),
+        ]));
+        assert_eq!(uart.initialize(48_000_000, 115_200, 2), Ok(()));
+        uart.release().done();
+    }
+    #[test]
+    fn invalid_baud_is_side_effect_free_and_busy_init_stays_disabled() {
+        let mut uart = Pl011::new(FakeIo::new([Write(0x30, 0), Read(0x18, 1 << 3)]));
+        assert_eq!(uart.initialize(0, 115_200, 1), Err(UartError::InvalidBaud));
+        assert_eq!(
+            uart.initialize(48_000_000, 115_200, 1),
+            Err(UartError::Timeout)
+        );
+        uart.release().done();
     }
 }
