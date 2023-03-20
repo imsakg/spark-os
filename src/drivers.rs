@@ -2,6 +2,7 @@
 
 pub mod mmio;
 pub mod pl011;
+pub mod ring;
 
 #[cfg(test)]
 pub(crate) mod test_support {
