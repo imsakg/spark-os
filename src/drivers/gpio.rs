@@ -107,6 +107,21 @@ impl<T: RegisterIo> Gpio<T> {
         );
         Ok(())
     }
+    /// Drive one output latch using GPSET/GPCLR, without reading either register.
+    /// Pin direction must already have been configured by the caller.
+    pub fn write_pin(&mut self, pin: Pin, high: bool) -> Result<(), GpioError> {
+        let pin = self.validate(pin)?;
+        let base = if high { 0x1c } else { 0x28 };
+        self.io.write32(base + (pin / 32) * 4, 1 << (pin % 32));
+        Ok(())
+    }
+
+    /// Sample the physical pin level from GPLEV, independently of its function.
+    pub fn is_high(&mut self, pin: Pin) -> Result<bool, GpioError> {
+        let pin = self.validate(pin)?;
+        Ok(self.io.read32(0x34 + (pin / 32) * 4) & (1 << (pin % 32)) != 0)
+    }
+
     /// Configure bias using the selected layout.
     ///
     /// Legacy hardware invokes `delay` twice; each call MUST wait at least 150
@@ -209,5 +224,47 @@ mod configuration_tests {
             Err(GpioError::InvalidPin)
         );
         legacy.release().done();
+    }
+}
+
+#[cfg(test)]
+mod level_tests {
+    use super::*;
+    use crate::drivers::test_support::{
+        Access::{Read, Write},
+        FakeIo,
+    };
+    #[test]
+    fn bank_boundaries_use_atomic_set_and_clear_without_register_reads() {
+        let mut gpio = Gpio::new(
+            FakeIo::new([
+                Write(0x1c, 1 << 31),
+                Write(0x20, 1),
+                Write(0x2c, 1 << 21),
+                Read(0x34, 1 << 31),
+                Read(0x38, 0),
+            ]),
+            Layout::Bcm2835,
+        );
+        gpio.write_pin(Pin::new(31).unwrap(), true).unwrap();
+        gpio.write_pin(Pin::new(32).unwrap(), true).unwrap();
+        gpio.write_pin(Pin::new(53).unwrap(), false).unwrap();
+        assert_eq!(gpio.is_high(Pin::new(31).unwrap()), Ok(true));
+        assert_eq!(gpio.is_high(Pin::new(32).unwrap()), Ok(false));
+        assert_eq!(
+            gpio.write_pin(Pin::new(54).unwrap(), true),
+            Err(GpioError::InvalidPin)
+        );
+        gpio.release().done();
+    }
+    #[test]
+    fn bcm2711_upper_pin_uses_bank_one() {
+        let mut gpio = Gpio::new(
+            FakeIo::new([Write(0x2c, 1 << 25), Read(0x38, 1 << 25)]),
+            Layout::Bcm2711,
+        );
+        gpio.write_pin(Pin::new(57).unwrap(), false).unwrap();
+        assert_eq!(gpio.is_high(Pin::new(57).unwrap()), Ok(true));
+        gpio.release().done();
     }
 }
