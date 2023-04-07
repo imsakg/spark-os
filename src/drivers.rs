@@ -1,6 +1,7 @@
 //! Allocation-free peripheral drivers separated from board-specific MMIO mapping.
 
 pub mod gpio;
+pub mod interrupts;
 pub mod mmio;
 pub mod pl011;
 pub mod ring;
