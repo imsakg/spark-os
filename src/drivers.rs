@@ -2,6 +2,7 @@
 
 pub mod gpio;
 pub mod interrupts;
+pub mod mailbox;
 pub mod mmio;
 pub mod pl011;
 pub mod ring;
