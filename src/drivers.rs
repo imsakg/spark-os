@@ -8,6 +8,7 @@ pub mod mmio;
 pub mod pl011;
 pub mod ring;
 pub mod timer;
+pub mod trace;
 
 #[cfg(test)]
 pub(crate) mod test_support {

@@ -264,3 +264,25 @@ mod tests {
         mailbox.release().done();
     }
 }
+
+#[cfg(test)]
+mod malformed_response_regressions {
+    use super::*;
+    #[test]
+    fn hostile_header_fields_and_lengths_are_rejected_without_panics() {
+        for index in 0..9 {
+            for value in [0, 1, 3, 4, 0x80000000, 0x80000004, u32::MAX] {
+                let mut message = PropertyMessage::<12>::new().unwrap();
+                message.add_tag(0x10001, 3, &[]).unwrap();
+                message.words_mut()[1] = 0x80000000;
+                message.words_mut()[4] = 0x80000004;
+                message.words_mut()[index] = value;
+                // No memory access is made through returned lengths until the
+                // complete response has passed structural validation.
+                if message.validate_response().is_ok() {
+                    let _ = message.response(0x10001);
+                }
+            }
+        }
+    }
+}

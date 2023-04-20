@@ -578,3 +578,53 @@ mod capacity_tests {
         assert_eq!(entry.users.get(), u32::MAX);
     }
 }
+
+#[cfg(test)]
+mod retry_regressions {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    static FAIL_ONCE: AtomicBool = AtomicBool::new(true);
+    static STOPS: AtomicUsize = AtomicUsize::new(0);
+    fn start() -> Result<(), ModuleFault> {
+        Ok(())
+    }
+    fn flaky() -> Result<(), ModuleFault> {
+        if FAIL_ONCE.swap(false, Ordering::SeqCst) {
+            Err(ModuleFault(1))
+        } else {
+            Ok(())
+        }
+    }
+    fn stop() {
+        STOPS.fetch_add(1, Ordering::SeqCst);
+    }
+    #[test]
+    fn explicit_retry_restarts_rolled_back_dependencies_and_preserves_failed_metadata() {
+        FAIL_ONCE.store(true, Ordering::SeqCst);
+        STOPS.store(0, Ordering::SeqCst);
+        let mut registry = Registry::<2>::new();
+        registry
+            .register(Descriptor {
+                name: "base",
+                dependencies: &[],
+                start,
+                stop,
+            })
+            .unwrap();
+        registry
+            .register(Descriptor {
+                name: "flaky",
+                dependencies: &["base"],
+                start: flaky,
+                stop,
+            })
+            .unwrap();
+        assert!(registry.initialize().is_err());
+        assert_eq!(STOPS.load(Ordering::SeqCst), 1);
+        assert_eq!(registry.descriptors().count(), 2);
+        registry.initialize().unwrap();
+        assert_eq!(registry.state("flaky"), Some(State::Active));
+        assert_eq!(registry.state("base"), Some(State::Active));
+        assert_eq!(STOPS.load(Ordering::SeqCst), 1);
+    }
+}
