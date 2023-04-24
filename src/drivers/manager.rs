@@ -320,6 +320,74 @@ mod tests {
         modules.unload("bus").unwrap();
     }
     #[test]
+    fn partial_dependency_preflight_releases_earlier_acquisitions() {
+        let modules = modules();
+        let events = RefCell::new(std::vec::Vec::new());
+        let mut first = TestDevice {
+            metadata: metadata("uart"),
+            id: 1,
+            fail: false,
+            events: &events,
+        };
+        let mut missing = TestDevice {
+            metadata: Metadata {
+                requires: Some("missing"),
+                ..metadata("second")
+            },
+            id: 2,
+            fail: false,
+            events: &events,
+        };
+        let mut manager = DeviceManager::<2>::new();
+        manager.register(&mut first).unwrap();
+        manager.register(&mut missing).unwrap();
+        assert!(matches!(
+            manager.initialize(&modules),
+            Err(DeviceError::Dependency {
+                device: "second",
+                ..
+            })
+        ));
+        assert!(events.borrow().is_empty());
+        modules.unload("bus").unwrap();
+    }
+    #[test]
+    fn later_failure_preserves_ready_devices_and_drop_releases_their_leases() {
+        let modules = modules();
+        let events = RefCell::new(std::vec::Vec::new());
+        let mut ready = TestDevice {
+            metadata: metadata("ready"),
+            id: 1,
+            fail: false,
+            events: &events,
+        };
+        let mut next = TestDevice {
+            metadata: metadata("next"),
+            id: 2,
+            fail: false,
+            events: &events,
+        };
+        let mut bad = TestDevice {
+            metadata: metadata("bad"),
+            id: 3,
+            fail: true,
+            events: &events,
+        };
+        {
+            let mut manager = DeviceManager::<3>::new();
+            manager.register(&mut ready).unwrap();
+            manager.initialize(&modules).unwrap();
+            manager.register(&mut next).unwrap();
+            manager.register(&mut bad).unwrap();
+            assert!(manager.initialize(&modules).is_err());
+            assert_eq!(*events.borrow(), [1, 2, 3, 12]);
+            assert_eq!(manager.state("ready"), Some(DeviceState::Ready));
+            assert_eq!(modules.unload("bus"), Err(crate::modules::Error::Busy));
+        }
+        assert_eq!(*events.borrow(), [1, 2, 3, 12, 11]);
+        modules.unload("bus").unwrap();
+    }
+    #[test]
     fn dependency_preflight_prevents_callbacks_and_metadata_capacity_is_bounded() {
         let modules = Registry::<0>::new();
         let events = RefCell::new(std::vec::Vec::new());

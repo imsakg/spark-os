@@ -12,8 +12,13 @@ pub enum MailboxError {
     InvalidTag,
     /// Firmware did not return the global success response code.
     FirmwareRejected,
-    /// Header, terminator, per-tag response bit, or returned length is invalid.
+    /// Header, terminator, or word-based tag framing is invalid.
     MalformedResponse,
+    /// Firmware reports a desired response length larger than supplied capacity.
+    /// This is valid truncation on the wire, but this strict API refuses it.
+    TruncatedResponse,
+    /// Firmware left this tag's response bit unset (for example, an unknown tag).
+    UnsupportedTag(u32),
     /// The requested tag ID was absent from a valid response.
     MissingTag,
     /// Bus address is zero or not 16-byte aligned.
@@ -68,7 +73,8 @@ impl<const WORDS: usize> PropertyMessage<WORDS> {
         let tag = self.used - 1;
         self.words[tag] = id;
         self.words[tag + 1] = (value_words * 4) as u32;
-        self.words[tag + 2] = (request.len() * 4) as u32;
+        // Request bits 30:0 are reserved, not a request-value length.
+        self.words[tag + 2] = 0;
         let values = tag + 3;
         self.words[values..values + value_words].fill(0);
         self.words[values..values + request.len()].copy_from_slice(request);
@@ -114,8 +120,16 @@ impl<const WORDS: usize> PropertyMessage<WORDS> {
             let capacity = self.words[tag + 1] as usize;
             let response = self.words[tag + 2];
             let length = (response & !RESPONSE) as usize;
-            if capacity % 4 != 0 || length % 4 != 0 || response & RESPONSE == 0 || length > capacity
-            {
+            if capacity % 4 != 0 {
+                return Err(MailboxError::MalformedResponse);
+            }
+            if response & RESPONSE == 0 {
+                return Err(MailboxError::UnsupportedTag(self.words[tag]));
+            }
+            if length > capacity {
+                return Err(MailboxError::TruncatedResponse);
+            }
+            if length % 4 != 0 {
                 return Err(MailboxError::MalformedResponse);
             }
             tag = (tag + 3)
@@ -206,7 +220,7 @@ mod tests {
     fn request_builder_bounds_capacity_and_validates_per_tag_reply_lengths() {
         let mut message = PropertyMessage::<12>::new().unwrap();
         message.add_tag(0x30002, 3, &[2]).unwrap();
-        assert_eq!(message.words(), &[36, 0, 0x30002, 12, 4, 2, 0, 0, 0]);
+        assert_eq!(message.words(), &[36, 0, 0x30002, 12, 0, 2, 0, 0, 0]);
         assert_eq!((message.as_mut_ptr() as usize) % 16, 0);
         let before = message.words().to_vec();
         assert_eq!(message.add_tag(1, 2, &[]), Err(MailboxError::Capacity));
@@ -218,12 +232,12 @@ mod tests {
         message.words_mut()[4] = 0x80000010;
         assert_eq!(
             message.validate_response(),
-            Err(MailboxError::MalformedResponse)
+            Err(MailboxError::TruncatedResponse)
         );
         message.words_mut()[4] = 12;
         assert_eq!(
             message.validate_response(),
-            Err(MailboxError::MalformedResponse)
+            Err(MailboxError::UnsupportedTag(0x30002))
         );
         assert!(matches!(
             PropertyMessage::<2>::new(),

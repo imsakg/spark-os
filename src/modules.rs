@@ -628,3 +628,83 @@ mod retry_regressions {
         assert_eq!(STOPS.load(Ordering::SeqCst), 1);
     }
 }
+
+/// Run repeatable module-lifecycle checks using only local fixed-capacity state.
+///
+/// This performs no hardware access, allocation, global registration, or code
+/// loading. It is suitable for an explicit boot diagnostic, not a substitute
+/// for board-level driver/interrupt validation.
+pub fn self_test() -> Result<(), &'static str> {
+    fn start() -> Result<(), ModuleFault> {
+        Ok(())
+    }
+    fn stop() {}
+    fn fail() -> Result<(), ModuleFault> {
+        Err(ModuleFault(1))
+    }
+    let mut registry = Registry::<2>::new();
+    registry
+        .register(Descriptor {
+            name: "consumer",
+            dependencies: &["base"],
+            start,
+            stop,
+        })
+        .map_err(|_| "module registration")?;
+    registry
+        .register(Descriptor {
+            name: "base",
+            dependencies: &[],
+            start,
+            stop,
+        })
+        .map_err(|_| "module registration")?;
+    registry.initialize().map_err(|_| "module initialization")?;
+    if registry.state("consumer") != Some(State::Active) {
+        return Err("module active state");
+    }
+    if registry.unload("base") != Err(Error::DependentActive("consumer")) {
+        return Err("module dependency guard");
+    }
+    let lease = registry.lease("consumer").map_err(|_| "module lease")?;
+    if registry.unload("consumer") != Err(Error::Busy) {
+        return Err("module usage guard");
+    }
+    drop(lease);
+    registry.unload("consumer").map_err(|_| "module unload")?;
+    registry.unload("base").map_err(|_| "module unload")?;
+    registry
+        .unregister("consumer")
+        .map_err(|_| "module removal")?;
+    registry.unregister("base").map_err(|_| "module removal")?;
+    if !registry.is_empty() {
+        return Err("module capacity reuse");
+    }
+    registry
+        .register(Descriptor {
+            name: "base",
+            dependencies: &[],
+            start,
+            stop,
+        })
+        .map_err(|_| "module registration")?;
+    registry
+        .register(Descriptor {
+            name: "bad",
+            dependencies: &["base"],
+            start: fail,
+            stop,
+        })
+        .map_err(|_| "module registration")?;
+    if registry.initialize()
+        != Err(Error::Initialization {
+            module: "bad",
+            fault: ModuleFault(1),
+        })
+        || registry.state("base") != Some(State::Registered)
+        || registry.state("bad") != Some(State::Failed)
+    {
+        return Err("module failure rollback");
+    }
+    Ok(())
+}

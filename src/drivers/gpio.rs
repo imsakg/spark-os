@@ -124,8 +124,9 @@ impl<T: RegisterIo> Gpio<T> {
 
     /// Configure bias using the selected layout.
     ///
-    /// Legacy hardware invokes `delay` twice; each call MUST wait at least 150
-    /// cycles per the SoC's GPPUD protocol. The driver cannot infer a CPU clock.
+    /// Legacy hardware invokes `delay` twice; each call MUST conservatively
+    /// satisfy the SoC's 150-cycle GPPUD delay (the datasheet does not identify
+    /// those as CPU cycles). Supply a board-qualified delay, not an empty loop.
     /// BCM2711 instead uses GPPUPPDN and never calls `delay`.
     pub fn set_pull(
         &mut self,
