@@ -10,6 +10,7 @@ pub mod drivers;
 pub mod memory;
 pub mod modules;
 pub mod process;
+pub mod syscall;
 
 #[cfg(test)]
 extern crate std;
