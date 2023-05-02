@@ -1,5 +1,8 @@
 //! Spark kernel call ABI. Dispatch is explicit; no EL0 exception vector is installed.
 
+mod user;
+pub use user::UserMemory;
+
 /// Stable numeric errors, encoded as negative signed return values.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(i64)]
