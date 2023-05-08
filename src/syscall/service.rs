@@ -25,8 +25,22 @@ impl<'a, C: ConsoleIo, const N: usize> Services<'a, C, N> {
 
     /// Decode a service number; unsupported numbers fail without side effects.
     pub fn dispatch(&mut self, request: Request, memory: &mut UserMemory<'_>) -> CallResult {
-        let _ = (&mut self.console, memory);
         match request.number {
+            64 => {
+                let [fd, address, length, ..] = request.arguments;
+                if fd != 1 && fd != 2 {
+                    return Err(Errno::BadFd);
+                }
+                let bytes = memory.read(address, length)?;
+                if bytes.is_empty() {
+                    return Ok(0);
+                }
+                let count = self.console.write(bytes)?;
+                if count > bytes.len() {
+                    return Err(Errno::Io);
+                }
+                Ok(count as u64)
+            }
             172 => self
                 .scheduler
                 .current()
@@ -35,6 +49,65 @@ impl<'a, C: ConsoleIo, const N: usize> Services<'a, C, N> {
             113 => Ok(self.scheduler.now()),
             _ => Err(Errno::NoSys),
         }
+    }
+}
+
+#[cfg(test)]
+mod write_tests {
+    use super::{tests::Console, *};
+    #[test]
+    fn write_preserves_binary_data_and_reports_partial_consumption() {
+        let mut scheduler = Scheduler::<1>::new();
+        scheduler.spawn().unwrap();
+        scheduler.dispatch();
+        let mut console = Console {
+            bytes: std::vec::Vec::new(),
+            limit: 3,
+        };
+        let mut bytes = [0, 0xff, 0xc3, 0xa9];
+        let mut memory = UserMemory::new(0x1000, &mut bytes).unwrap();
+        let mut services = Services::new(&mut scheduler, &mut console);
+        assert_eq!(
+            services.dispatch(
+                Request {
+                    number: 64,
+                    arguments: [1, 0x1000, 4, 0, 0, 0]
+                },
+                &mut memory
+            ),
+            Ok(3)
+        );
+        assert_eq!(
+            services.dispatch(
+                Request {
+                    number: 64,
+                    arguments: [2, 0x1000, 0, 0, 0, 0]
+                },
+                &mut memory
+            ),
+            Ok(0)
+        );
+        assert_eq!(
+            services.dispatch(
+                Request {
+                    number: 64,
+                    arguments: [0, 0x1000, 4, 0, 0, 0]
+                },
+                &mut memory
+            ),
+            Err(Errno::BadFd)
+        );
+        assert_eq!(
+            services.dispatch(
+                Request {
+                    number: 64,
+                    arguments: [1, 0x1003, 2, 0, 0, 0]
+                },
+                &mut memory
+            ),
+            Err(Errno::Fault)
+        );
+        assert_eq!(console.bytes, [0, 0xff, 0xc3]);
     }
 }
 
