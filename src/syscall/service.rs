@@ -26,6 +26,21 @@ impl<'a, C: ConsoleIo, const N: usize> Services<'a, C, N> {
     /// Decode a service number; unsupported numbers fail without side effects.
     pub fn dispatch(&mut self, request: Request, memory: &mut UserMemory<'_>) -> CallResult {
         match request.number {
+            63 => {
+                let [fd, address, length, ..] = request.arguments;
+                if fd != 0 {
+                    return Err(Errno::BadFd);
+                }
+                let bytes = memory.writable(address, length)?;
+                if bytes.is_empty() {
+                    return Ok(0);
+                }
+                let count = self.console.read(bytes)?;
+                if count > bytes.len() {
+                    return Err(Errno::Io);
+                }
+                Ok(count as u64)
+            }
             64 => {
                 let [fd, address, length, ..] = request.arguments;
                 if fd != 1 && fd != 2 {
@@ -49,6 +64,65 @@ impl<'a, C: ConsoleIo, const N: usize> Services<'a, C, N> {
             113 => Ok(self.scheduler.now()),
             _ => Err(Errno::NoSys),
         }
+    }
+}
+
+#[cfg(test)]
+mod read_tests {
+    use super::*;
+    struct Input {
+        calls: usize,
+    }
+    impl ConsoleIo for Input {
+        fn write(&mut self, _: &[u8]) -> Result<usize, Errno> {
+            Err(Errno::BadFd)
+        }
+        fn read(&mut self, bytes: &mut [u8]) -> Result<usize, Errno> {
+            self.calls += 1;
+            if self.calls > 1 {
+                return Err(Errno::Again);
+            }
+            bytes[..2].copy_from_slice(&[0xff, 0]);
+            Ok(2)
+        }
+    }
+    #[test]
+    fn read_validates_full_buffer_before_consuming_input_and_distinguishes_again() {
+        let mut scheduler = Scheduler::<1>::new();
+        scheduler.spawn().unwrap();
+        scheduler.dispatch();
+        let mut console = Input { calls: 0 };
+        let mut bytes = [5; 4];
+        let mut memory = UserMemory::new(0x1000, &mut bytes).unwrap();
+        let mut services = Services::new(&mut scheduler, &mut console);
+        let request = Request {
+            number: 63,
+            arguments: [0, 0x1000, 4, 0, 0, 0],
+        };
+        assert_eq!(
+            services.dispatch(
+                Request {
+                    arguments: [0, 0x1003, 2, 0, 0, 0],
+                    ..request
+                },
+                &mut memory
+            ),
+            Err(Errno::Fault)
+        );
+        assert_eq!(services.dispatch(request, &mut memory), Ok(2));
+        assert_eq!(memory.read(0x1000, 4), Ok(&[0xff, 0, 5, 5][..]));
+        assert_eq!(services.dispatch(request, &mut memory), Err(Errno::Again));
+        assert_eq!(
+            services.dispatch(
+                Request {
+                    arguments: [1, 0x1000, 4, 0, 0, 0],
+                    ..request
+                },
+                &mut memory
+            ),
+            Err(Errno::BadFd)
+        );
+        assert_eq!(console.calls, 2);
     }
 }
 
