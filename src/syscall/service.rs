@@ -1,7 +1,19 @@
 //! Services borrowed by one serialized kernel-call dispatch.
 
 use super::{CallResult, Errno, Request, UserMemory};
-use crate::process::Scheduler;
+use crate::process::{ProcessError, Scheduler};
+
+impl From<ProcessError> for Errno {
+    fn from(error: ProcessError) -> Self {
+        match error {
+            ProcessError::NoCurrent | ProcessError::NotFound => Self::NoCurrent,
+            ProcessError::ClockOverflow | ProcessError::IdExhausted => Self::Overflow,
+            ProcessError::TableFull => Self::Again,
+            ProcessError::NotChild => Self::NoChild,
+            _ => Self::Invalid,
+        }
+    }
+}
 
 /// Nonblocking byte-stream boundary. Successful counts must not exceed the slice.
 pub trait ConsoleIo {
@@ -26,6 +38,16 @@ impl<'a, C: ConsoleIo, const N: usize> Services<'a, C, N> {
     /// Decode a service number; unsupported numbers fail without side effects.
     pub fn dispatch(&mut self, request: Request, memory: &mut UserMemory<'_>) -> CallResult {
         match request.number {
+            124 => {
+                self.scheduler.yield_current().map_err(Errno::from)?;
+                Ok(0)
+            }
+            101 => {
+                self.scheduler
+                    .sleep_for(request.arguments[0])
+                    .map_err(Errno::from)?;
+                Ok(0)
+            }
             63 => {
                 let [fd, address, length, ..] = request.arguments;
                 if fd != 0 {
@@ -64,6 +86,59 @@ impl<'a, C: ConsoleIo, const N: usize> Services<'a, C, N> {
             113 => Ok(self.scheduler.now()),
             _ => Err(Errno::NoSys),
         }
+    }
+}
+
+#[cfg(test)]
+mod scheduling_tests {
+    use super::{tests::Console, *};
+    #[test]
+    fn yield_and_sleep_change_policy_without_claiming_cpu_context_switches() {
+        let mut scheduler = Scheduler::<2>::with_quantum(1).unwrap();
+        let first = scheduler.spawn().unwrap();
+        let second = scheduler.spawn().unwrap();
+        scheduler.dispatch();
+        let mut console = Console::default();
+        let mut backing = [];
+        let mut memory = UserMemory::new(0, &mut backing).unwrap();
+        assert_eq!(
+            Services::new(&mut scheduler, &mut console).dispatch(
+                Request {
+                    number: 124,
+                    arguments: [0; 6]
+                },
+                &mut memory
+            ),
+            Ok(0)
+        );
+        assert_eq!(scheduler.current(), Some(second));
+        assert_eq!(
+            Services::new(&mut scheduler, &mut console).dispatch(
+                Request {
+                    number: 101,
+                    arguments: [2, 0, 0, 0, 0, 0]
+                },
+                &mut memory
+            ),
+            Ok(0)
+        );
+        assert_eq!(scheduler.current(), Some(first));
+        assert_eq!(scheduler.next_wake_deadline(), Some(2));
+        assert_eq!(
+            Services::new(&mut scheduler, &mut console).dispatch(
+                Request {
+                    number: 101,
+                    arguments: [0; 6]
+                },
+                &mut memory
+            ),
+            Err(Errno::Invalid)
+        );
+        scheduler.tick().unwrap();
+        scheduler.tick().unwrap();
+        scheduler.yield_current().unwrap();
+        assert_eq!(scheduler.current(), Some(second));
+        assert_eq!(scheduler.check_invariants(), Ok(()));
     }
 }
 
