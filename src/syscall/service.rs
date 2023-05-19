@@ -38,6 +38,31 @@ impl<'a, C: ConsoleIo, const N: usize> Services<'a, C, N> {
     /// Decode a service number; unsupported numbers fail without side effects.
     pub fn dispatch(&mut self, request: Request, memory: &mut UserMemory<'_>) -> CallResult {
         match request.number {
+            93 => {
+                let code =
+                    i32::try_from(request.arguments[0] as i64).map_err(|_| Errno::Invalid)?;
+                self.scheduler.exit_current(code).map_err(Errno::from)?;
+                Ok(0)
+            }
+            260 => {
+                let parent = self.scheduler.current().ok_or(Errno::NoCurrent)?;
+                let child =
+                    crate::process::ProcessId::new(request.arguments[0]).ok_or(Errno::NoChild)?;
+                let process = self
+                    .scheduler
+                    .processes()
+                    .get(child)
+                    .map_err(|_| Errno::NoChild)?;
+                if process.parent() != Some(parent) {
+                    return Err(Errno::NoChild);
+                }
+                // Validate output before collecting the only retained status snapshot.
+                let output = memory.writable(request.arguments[1], 4)?;
+                let code = process.exit_code().ok_or(Errno::Again)?;
+                self.scheduler.reap(child).map_err(Errno::from)?;
+                output.copy_from_slice(&code.to_le_bytes());
+                Ok(child.get())
+            }
             124 => {
                 self.scheduler.yield_current().map_err(Errno::from)?;
                 Ok(0)
@@ -86,6 +111,62 @@ impl<'a, C: ConsoleIo, const N: usize> Services<'a, C, N> {
             113 => Ok(self.scheduler.now()),
             _ => Err(Errno::NoSys),
         }
+    }
+}
+
+#[cfg(test)]
+mod lifecycle_tests {
+    use super::{tests::Console, *};
+    #[test]
+    fn wait_checks_parent_and_status_buffer_before_collecting_child() {
+        let mut scheduler = Scheduler::<2>::new();
+        let parent = scheduler.spawn().unwrap();
+        let child = scheduler.spawn_child(parent).unwrap();
+        scheduler.dispatch();
+        let mut console = Console::default();
+        let mut backing = [0xaa; 4];
+        let mut memory = UserMemory::new(0x1000, &mut backing).unwrap();
+        let wait = Request {
+            number: 260,
+            arguments: [child.get(), 0x1000, 0, 0, 0, 0],
+        };
+        assert_eq!(
+            Services::new(&mut scheduler, &mut console).dispatch(wait, &mut memory),
+            Err(Errno::Again)
+        );
+        assert_eq!(scheduler.current(), Some(parent));
+        scheduler.yield_current().unwrap();
+        assert_eq!(
+            Services::new(&mut scheduler, &mut console).dispatch(
+                Request {
+                    number: 93,
+                    arguments: [(-7_i64) as u64, 0, 0, 0, 0, 0]
+                },
+                &mut memory
+            ),
+            Ok(0)
+        );
+        assert_eq!(scheduler.current(), Some(parent));
+        assert_eq!(
+            Services::new(&mut scheduler, &mut console).dispatch(
+                Request {
+                    arguments: [child.get(), 0x1001, 0, 0, 0, 0],
+                    ..wait
+                },
+                &mut memory
+            ),
+            Err(Errno::Fault)
+        );
+        assert!(scheduler.processes().get(child).is_ok());
+        assert_eq!(
+            Services::new(&mut scheduler, &mut console).dispatch(wait, &mut memory),
+            Ok(child.get())
+        );
+        assert_eq!(memory.read(0x1000, 4), Ok(&(-7_i32).to_le_bytes()[..]));
+        assert_eq!(
+            Services::new(&mut scheduler, &mut console).dispatch(wait, &mut memory),
+            Err(Errno::NoChild)
+        );
     }
 }
 
