@@ -1,7 +1,7 @@
 //! Spark kernel call ABI. Dispatch is explicit; no EL0 exception vector is installed.
 
 mod service;
-pub use service::{ConsoleIo, Services};
+pub use service::{ConsoleIo, Services, MAX_IO_BYTES};
 
 mod user;
 pub use user::UserMemory;

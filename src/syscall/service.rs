@@ -15,6 +15,9 @@ impl From<ProcessError> for Errno {
     }
 }
 
+/// Maximum bytes processed by one console call to bound synchronous kernel work.
+pub const MAX_IO_BYTES: u64 = 4096;
+
 /// Nonblocking byte-stream boundary. Successful counts must not exceed the slice.
 pub trait ConsoleIo {
     /// Write some bytes, or return an error when no byte was consumed.
@@ -37,6 +40,14 @@ impl<'a, C: ConsoleIo, const N: usize> Services<'a, C, N> {
 
     /// Decode a service number; unsupported numbers fail without side effects.
     pub fn dispatch(&mut self, request: Request, memory: &mut UserMemory<'_>) -> CallResult {
+        if matches!(request.number, 63 | 64 | 93 | 101 | 124 | 172 | 260)
+            && self.scheduler.current().is_none()
+        {
+            return Err(Errno::NoCurrent);
+        }
+        if matches!(request.number, 63 | 64) && request.arguments[2] > MAX_IO_BYTES {
+            return Err(Errno::Invalid);
+        }
         match request.number {
             93 => {
                 let code =
@@ -111,6 +122,61 @@ impl<'a, C: ConsoleIo, const N: usize> Services<'a, C, N> {
             113 => Ok(self.scheduler.now()),
             _ => Err(Errno::NoSys),
         }
+    }
+}
+
+#[cfg(test)]
+mod boundary_tests {
+    use super::{tests::Console, *};
+    #[test]
+    fn effectful_calls_need_a_current_process_and_io_has_a_fixed_work_budget() {
+        let mut scheduler = Scheduler::<1>::new();
+        let mut console = Console {
+            bytes: std::vec::Vec::new(),
+            limit: usize::MAX,
+        };
+        let mut backing = [0u8; 8];
+        let mut memory = UserMemory::new(0x1000, &mut backing).unwrap();
+        for number in [63, 64, 93, 101, 124, 172, 260] {
+            assert_eq!(
+                Services::new(&mut scheduler, &mut console).dispatch(
+                    Request {
+                        number,
+                        arguments: [1, 0x1000, 1, 0, 0, 0]
+                    },
+                    &mut memory
+                ),
+                Err(Errno::NoCurrent)
+            );
+        }
+        scheduler.spawn().unwrap();
+        scheduler.dispatch();
+        for number in [63, 64] {
+            assert_eq!(
+                Services::new(&mut scheduler, &mut console).dispatch(
+                    Request {
+                        number,
+                        arguments: [u64::from(number == 64), 0x1000, 4097, 0, 0, 0]
+                    },
+                    &mut memory
+                ),
+                Err(Errno::Invalid)
+            );
+        }
+        for number in [0, 1, 62, 65, 112, 125, u64::MAX] {
+            assert_eq!(
+                Services::new(&mut scheduler, &mut console).dispatch(
+                    Request {
+                        number,
+                        arguments: [u64::MAX; 6]
+                    },
+                    &mut memory
+                ),
+                Err(Errno::NoSys)
+            );
+        }
+        assert!(console.bytes.is_empty());
+        assert_eq!(scheduler.check_invariants(), Ok(()));
     }
 }
 
