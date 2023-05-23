@@ -7,6 +7,7 @@
 pub const ABI_VERSION: u32 = 1;
 
 pub mod drivers;
+pub mod ipc;
 pub mod memory;
 pub mod modules;
 pub mod process;
