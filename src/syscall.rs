@@ -1,5 +1,8 @@
 //! Spark kernel call ABI. Dispatch is explicit; no EL0 exception vector is installed.
 
+mod selftest;
+pub use selftest::self_test;
+
 mod service;
 pub use service::{ConsoleIo, Services, MAX_IO_BYTES};
 
