@@ -123,6 +123,9 @@ unsafe fn kernel_init() -> ! {
 
     println!("[1] Chars written: {}", console().chars_written());
 
-    println!("[2] Stopping here.");
+    let report = spark_os::boot::run_diagnostics().expect("kernel service diagnostics");
+    println!("[2] kernel services: {} suites passed", report.suites);
+
+    println!("[3] Stopping here.");
     cpu::wait_forever()
 }
