@@ -19,6 +19,15 @@ pub enum UartError {
     Receive(u8),
 }
 
+/// A text operation failed after an exact count of bytes had reached UARTDR.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PartialWrite {
+    /// Successfully emitted bytes, including inserted carriage returns.
+    pub written: usize,
+    /// The first failed byte's device error.
+    pub error: UartError,
+}
+
 /// Checked integer and six-bit fractional baud divisors.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct BaudDivisors {
@@ -76,6 +85,22 @@ impl<T: RegisterIo> Pl011<T> {
         Ok(())
     }
 
+    /// Write UTF-8 bytes, expanding LF to CRLF, with accurate partial accounting.
+    pub fn write_text(&mut self, text: &str, polls: usize) -> Result<usize, PartialWrite> {
+        let mut written = 0;
+        for &byte in text.as_bytes() {
+            if byte == b'\n' {
+                self.write_byte(b'\r', polls)
+                    .map_err(|error| PartialWrite { written, error })?;
+                written += 1;
+            }
+            self.write_byte(byte, polls)
+                .map_err(|error| PartialWrite { written, error })?;
+            written += 1;
+        }
+        Ok(written)
+    }
+
     /// Recover ownership of the transport without changing UART registers.
     pub fn release(self) -> T {
         self.io
@@ -121,6 +146,43 @@ impl<T: RegisterIo> Pl011<T> {
             }
         }
         Err(UartError::Timeout)
+    }
+}
+
+#[cfg(test)]
+mod text_tests {
+    use super::*;
+    use crate::drivers::test_support::{
+        Access::{Read, Write},
+        FakeIo,
+    };
+    #[test]
+    fn text_is_utf8_with_crlf_and_timeouts_report_actual_partial_bytes() {
+        let mut uart = Pl011::new(FakeIo::new([
+            Read(0x18, 0),
+            Write(0, 0xc3),
+            Read(0x18, 0),
+            Write(0, 0xa9),
+            Read(0x18, 0),
+            Write(0, 13),
+            Read(0x18, 0),
+            Write(0, 10),
+        ]));
+        assert_eq!(uart.write_text("é\n", 1), Ok(4));
+        uart.release().done();
+        let mut uart = Pl011::new(FakeIo::new([
+            Read(0x18, 0),
+            Write(0, 97),
+            Read(0x18, 1 << 5),
+        ]));
+        assert_eq!(
+            uart.write_text("ab", 1),
+            Err(PartialWrite {
+                written: 1,
+                error: UartError::Timeout
+            })
+        );
+        uart.release().done();
     }
 }
 

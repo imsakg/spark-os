@@ -119,6 +119,9 @@ mod synchronization;
 unsafe fn kernel_init() -> ! {
     use console::console;
 
+    // QEMU serial does not model the firmware clock tree; physical boards must
+    // configure this UART clock and GPIO routing before using the same adapter.
+    bsp::console::initialize(48_000_000).expect("polling UART initialization");
     println!("[0] Hello from Rust!");
 
     println!("[1] Chars written: {}", console().chars_written());
@@ -126,6 +129,21 @@ unsafe fn kernel_init() -> ! {
     let report = spark_os::boot::run_diagnostics().expect("kernel service diagnostics");
     println!("[2] kernel services: {} suites passed", report.suites);
 
-    println!("[3] Stopping here.");
+    let mut scheduler = spark_os::process::Scheduler::<1>::new();
+    scheduler.spawn().expect("boot caller");
+    scheduler.dispatch();
+    let mut serial = bsp::console::SyscallConsole;
+    let mut message = *b"[3] syscall UART: ok\r\n";
+    let length = message.len() as u64;
+    let mut memory = spark_os::syscall::UserMemory::new(0x1000, &mut message).expect("boot buffer");
+    let result = spark_os::syscall::Services::new(&mut scheduler, &mut serial).dispatch(
+        spark_os::syscall::Request {
+            number: 64,
+            arguments: [1, 0x1000, length, 0, 0, 0],
+        },
+        &mut memory,
+    );
+    assert_eq!(result, Ok(length));
+    println!("[4] Stopping here.");
     cpu::wait_forever()
 }
