@@ -213,4 +213,14 @@ test_boot: $(KERNEL_BIN)
 
 test: test_boot
 
+.PHONY: host-test kernel-rpi3 kernel-rpi4
+host-test:
+	@sh tools/host-test.sh
+
+kernel-rpi3:
+	@sh tools/build-kernel.sh rpi3
+
+kernel-rpi4:
+	@sh tools/build-kernel.sh rpi4
+
 endif
