@@ -100,6 +100,7 @@
 #![feature(asm_const)]
 #![feature(format_args_nl)]
 #![feature(panic_info_message)]
+#![feature(trait_alias)]
 #![no_main]
 #![no_std]
 
@@ -108,6 +109,7 @@ mod console;
 mod cpu;
 mod panic_wait;
 mod print;
+mod synchronization;
 
 /// Early init code.
 ///
@@ -115,7 +117,12 @@ mod print;
 ///
 /// - Only a single core must be active and running this function.
 unsafe fn kernel_init() -> ! {
-    println!("Hello from Rust!");
+    use console::console;
 
-    panic!("Stopping here.")
+    println!("[0] Hello from Rust!");
+
+    println!("[1] Chars written: {}", console().chars_written());
+
+    println!("[2] Stopping here.");
+    cpu::wait_forever()
 }
